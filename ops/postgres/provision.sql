@@ -25,6 +25,9 @@ DO $$ BEGIN RAISE EXCEPTION 'run as the bootstrap superuser'; END $$;
 -- a failed statement is logged with its text, and the statements below carry passwords
 SET log_min_error_statement = panic;
 SET log_statement = none;
+-- taking ownership locks a relation exclusively and a release runs while the previous one still serves traffic: wait briefly, then fail the release instead of queueing behind a long query and stalling the service
+SET lock_timeout = '5s';
+SET statement_timeout = '60s';
 
 SELECT :'migrator' ~ '^[a-z_][a-z0-9_]*$' AND :'runtime' ~ '^[a-z_][a-z0-9_]*$'
          AND :'migrator' <> :'runtime' AND current_user NOT IN (:'migrator', :'runtime') AS roles_ok,
