@@ -25,5 +25,6 @@ RUN npm run build
 FROM nginx:1.27-alpine AS prod
 COPY nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY nginx/proxy_params.conf /etc/nginx/proxy_params.conf
+COPY nginx/security_headers.conf /etc/nginx/security_headers.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80

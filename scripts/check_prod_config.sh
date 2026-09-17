@@ -89,6 +89,32 @@ grep -Eq 'map[[:space:]]+\$http_x_forwarded_proto[[:space:]]+\$forwarded_proto' 
 grep -A4 'map[[:space:]]\+\$http_x_forwarded_proto' frontend/nginx/default.conf | grep -q '\$scheme' || {
   echo "FAIL: no scheme fallback for a request that arrives without a proxy"; fail=1; }
 
+# every answer the spa host gives carries the same security headers, and add_header inside a location replaces what an outer block set, so each location has to include them
+python3 - <<'HEADERS' || fail=1
+import pathlib, re
+
+conf = pathlib.Path("frontend/nginx/default.conf").read_text(encoding="utf-8")
+headers = pathlib.Path("frontend/nginx/security_headers.conf").read_text(encoding="utf-8")
+failed = []
+for what, pattern in (("X-Content-Type-Options nosniff", r'X-Content-Type-Options "nosniff"'),
+                      ("a content security policy", r"Content-Security-Policy"),
+                      ("frame-ancestors 'none'", r"frame-ancestors 'none'"),
+                      ("a referrer policy", r"Referrer-Policy")):
+    if not re.search(pattern, headers):
+        failed.append("security_headers.conf is missing " + what)
+bare = [block.splitlines()[0].strip() for block in re.findall(r"location [^{]+\{[^}]*\}", conf, re.S)
+        if "security_headers.conf" not in block]
+if bare:
+    failed.append("these locations answer without the security headers: " + "; ".join(bare))
+if "server_tokens off;" not in conf:
+    failed.append("nginx announces its version")
+if not re.search(r"location = /admin/login/ \{[^}]*limit_req zone=", conf, re.S):
+    failed.append("the admin password form is not rate limited")
+if failed:
+    print("FAIL: " + "; ".join(failed))
+    raise SystemExit(1)
+HEADERS
+
 # migrations are a deployment step, not something every process races on startup
 RENDERED_JSON="$rendered_json" python3 - <<'MIGRATE' || fail=1
 import json, os
