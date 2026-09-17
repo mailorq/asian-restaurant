@@ -1,3 +1,4 @@
+from django.conf import settings
 from ninja import NinjaAPI, Schema
 
 from accounts.api import router as auth_router
@@ -11,7 +12,9 @@ api = NinjaAPI(
     title="Asian Restaurant API",
     version="1.0.0",
     description="OpenAPI. Auth, Cart ...",
-    docs_url="/docs",
+    # the schema names every endpoint and its fields, the staff ones included; production serves neither it nor the page that renders it
+    docs_url=None if settings.DJANGO_PRODUCTION else "/docs",
+    openapi_url=None if settings.DJANGO_PRODUCTION else "/openapi.json",
 )
 
 

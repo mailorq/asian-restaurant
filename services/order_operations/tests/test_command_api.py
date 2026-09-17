@@ -193,11 +193,11 @@ def test_oversized_reason_is_rejected(client, keypair):
     assert OperationCommand.objects.count() == 0
 
 
-def test_schema_is_not_served_in_production(settings):
-    from config.api import _docs_url
+def test_neither_the_schema_nor_its_page_has_a_url_in_production(settings):
+    from config.api import _schema_url
 
     settings.PRODUCTION = True
-    assert _docs_url() is None
+    assert _schema_url("/docs") is None and _schema_url("/openapi.json") is None
 
     settings.PRODUCTION = False
-    assert _docs_url() == "/docs"
+    assert _schema_url("/docs") == "/docs"

@@ -46,3 +46,18 @@ def test_a_placeholder_shaped_secret_refuses_to_start(secret):
     assert "ImproperlyConfigured" in result.stderr and "OPERATIONS_SECRET_KEY" in result.stderr, (
         f"{secret!r} failed for another reason:\n{result.stderr[-800:]}"
     )
+
+
+def test_the_schema_is_not_served_in_production():
+    # the schema names every staff endpoint and its fields
+    env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
+    env |= BASE
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import os, django; os.environ['DJANGO_SETTINGS_MODULE'] = 'config.settings'; django.setup();"
+         " from config.api import api; print('docs_url', api.docs_url, 'openapi_url', api.openapi_url)"],
+        cwd=SERVICE_ROOT, env=env, capture_output=True, text=True, timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert "docs_url None openapi_url None" in result.stdout, result.stdout

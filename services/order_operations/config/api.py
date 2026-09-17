@@ -16,14 +16,14 @@ from operations.pagination import DEFAULT_PAGE_SIZE, paginate
 
 IDEMPOTENCY_HEADER = "Idempotency-Key"
 
-def _docs_url() -> str | None:
-    # the schema names every staff endpoint and its fields; production serves it to nobody
-    return None if settings.PRODUCTION else "/docs"
+def _schema_url(path: str) -> str | None:
+    # the schema names every staff endpoint and its fields; production serves neither it nor the page that renders it
+    return None if settings.PRODUCTION else path
 
 
 # staff-only by default; only /health and, outside production, the schema are open
-api = NinjaAPI(title="Order Operations API", version="0.1.0", docs_url=_docs_url(),
-               auth=EmployeeJWTAuth())
+api = NinjaAPI(title="Order Operations API", version="0.1.0", docs_url=_schema_url("/docs"),
+               openapi_url=_schema_url("/openapi.json"), auth=EmployeeJWTAuth())
 
 
 class HealthOut(Schema):

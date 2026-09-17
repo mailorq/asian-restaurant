@@ -72,3 +72,18 @@ def test_a_placeholder_shaped_secret_refuses_to_start(signing_key, secret):
 def test_a_development_signing_kid_refuses_to_start(signing_key, kid):
     result = _boot(signing_key, IDENTITY_JWT_KID=kid)
     assert _refused(result, "development signing kid"), f"{kid!r}:\n{result.stderr[-800:]}"
+
+
+def test_the_schema_is_not_served_in_production(signing_key):
+    # the schema names every endpoint and its fields, the staff ones included
+    env = {k: v for k, v in os.environ.items() if k not in ISOLATED}
+    env |= BASE | {"IDENTITY_JWT_PRIVATE_KEY_FILE": str(signing_key)}
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import os, django; os.environ['DJANGO_SETTINGS_MODULE'] = 'config.settings'; django.setup();"
+         " from config.api import api; print('docs_url', api.docs_url, 'openapi_url', api.openapi_url)"],
+        cwd=SERVICE_ROOT, env=env, capture_output=True, text=True, timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert "docs_url None openapi_url None" in result.stdout, result.stdout
