@@ -214,3 +214,17 @@ def test_relay_headers_have_no_causation_for_plain_events(order):
     row = OrderOutbox.objects.filter(event_type="order.created").first()
 
     assert _headers(row)["causation_id"] is None
+
+
+def test_a_staff_role_without_the_orders_capability_cannot_transition(order, employee_user, monkeypatch):
+    # the command plane must require the capability the http endpoint requires, or one path grants what the other refuses
+    from accounts import roles
+
+    actor = _grant(employee_user)
+    monkeypatch.setitem(roles.CAPABILITIES, StaffRole.MANAGER, frozenset({roles.Capability.INVENTORY}))
+
+    outcome = _apply(_request(actor, order.id))
+
+    assert outcome.data.get("reject_code") == "actor_not_authorized", outcome.data
+    order.refresh_from_db()
+    assert order.status == "created"

@@ -18,7 +18,7 @@ from event_contracts import (
     TransitionRejectCode,
 )
 
-from accounts.models import has_operations_role
+from accounts.roles import Capability, has_capability
 from orders import service as order_service
 from orders.models import CommandInbox, Order, OrderOutbox, OrderStatusHistory
 
@@ -62,7 +62,7 @@ def _authorized(actor, data: OrderTransitionRequestedData) -> bool:
     return bool(
         actor
         and actor.is_active
-        and has_operations_role(actor)
+        and has_capability(actor, Capability.ORDERS)
         and actor.authz_version == data.actor_authz_version
     )
 
