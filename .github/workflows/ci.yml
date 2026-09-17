@@ -61,6 +61,7 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
       - run: python manage.py check
+      - run: python manage.py makemigrations --check --dry-run
       - run: pytest
 
   # the whole command lifecycle, lease/fencing, expiry and the dispatcher live here; without this
@@ -129,6 +130,7 @@ jobs:
   command-permissions:
     # the publisher credential is a security boundary, so its restrictions are asserted against a
     # real broker instead of being skipped when no broker is configured
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -219,6 +221,7 @@ jobs:
 
   prod-bootstrap:
     # the release path for the broker: the one-shot rabbitmq-provision service against a bare broker from the production render, then the grants it has to leave behind
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -226,6 +229,7 @@ jobs:
 
   db-roles:
     # the production database roles: a storefront volume from before the split and a fresh operations volume, provisioned and migrated as a release does, then what the runtime role may and may not do
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -234,6 +238,7 @@ jobs:
   ops-pool:
     # the operations pool on the production render: a pool of one under a locked projection and a burst past the
     # worker's bound, answered only with 200 and neutral 503s, within the pool's connection and the pids limit
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

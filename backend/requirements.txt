@@ -21,7 +21,7 @@ pika==1.4.4
 
 # Application servers
 gunicorn==26.0.0
-uvicorn[standard]>=0.30,<0.40  # ASGI runner; required for async streaming (SSE)
+uvicorn[standard]==0.39.0  # ASGI runner; required for async streaming (SSE)
 
 # Static files
 whitenoise==6.12.0
