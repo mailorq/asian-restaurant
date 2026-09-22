@@ -28,11 +28,13 @@ class Command(BaseCommand):
         if quantity < 0:
             raise CommandError("--quantity must not be negative")
         with transaction.atomic():
+            # checkout and stock corrections lock product rows in id order. holding all of them first means an
+            # order committed before this point is seen by the check below, and one after it waits for the stock
+            ids = list(Product.objects.select_for_update().order_by("id").values_list("id", flat=True))
             if Order.objects.exists() or StockAdjustment.objects.exists():
                 raise CommandError(
                     "refused: the shop already has orders or stock history, set stock per product instead"
                 )
-            ids = list(Product.objects.order_by("id").values_list("id", flat=True))
             for product_id in ids:
                 inventory.set_stock(product_id, quantity, reason="initial stock")
         self.stdout.write(

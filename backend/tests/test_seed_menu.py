@@ -1,14 +1,19 @@
+import threading
 from decimal import Decimal
 
 import pytest
+from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
 
+from cart import service as cart_service
 from menu import inventory
 from menu.management.commands import seed_menu
 from menu.management.commands.seed_menu import _load_products
 from menu.models import Product, StockAdjustment
+from orders import service as order_service
 from orders.models import OrderOutbox
+from tests.concurrency import await_a_lock_waiter, in_thread
 
 pytestmark = pytest.mark.django_db
 
@@ -106,8 +111,6 @@ def test_initial_stock_goes_through_the_stock_writer_once():
 
 
 def test_initial_stock_is_refused_once_the_shop_has_orders(user, make_product, seed_cart):
-    from orders import service as order_service
-
     product = make_product(stock=10)
     seed_cart(user.id, {product.id: 1})
     order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-seed-refused")
@@ -117,3 +120,95 @@ def test_initial_stock_is_refused_once_the_shop_has_orders(user, make_product, s
         call_command("seed_initial_stock", "--confirm")
 
     assert _state() == before
+
+
+def _stocked_product(code):
+    return Product.objects.create(
+        code=code,
+        category="dish",
+        name="Рамен",
+        description="d",
+        price="100.00",
+        stock_quantity=10,
+        is_active=True,
+    )
+
+
+def _buy(product, quantity, n):
+    buyer = get_user_model().objects.create_user(
+        username=f"+7999100{n:04d}", password="Pass!2345", phone=f"+7999100{n:04d}"
+    )
+    cart_service._sync_redis().hset(
+        cart_service.user_key(buyer.id),
+        mapping={str(product.id): quantity, cart_service.VERSION_FIELD: 1},
+    )
+    order_service.checkout(buyer, "ул. Пушкина, 12", "cash", f"idem-seed-race-{n}")
+
+
+def _seed(outcome):
+    def run():
+        try:
+            call_command("seed_initial_stock", "--confirm", "--quantity", "50")
+            outcome["seed"] = "applied"
+        except CommandError:
+            outcome["seed"] = "refused"
+
+    return run
+
+
+@pytest.mark.django_db(transaction=True)
+def test_initial_stock_queued_behind_a_sale_is_refused_after_it(monkeypatch):
+    product = _stocked_product("race_seed_sale_first")
+    holding, release, errors, outcome = threading.Event(), threading.Event(), [], {}
+    real = inventory.record_stock_change
+
+    def sale_holds_the_row(*args, **kwargs):
+        real(*args, **kwargs)
+        if threading.current_thread().name == "sale":
+            holding.set()
+            assert release.wait(timeout=20)
+
+    monkeypatch.setattr(inventory, "record_stock_change", sale_holds_the_row)
+    sale = in_thread("sale", lambda: _buy(product, 3, 1), errors)
+    seed = in_thread("seed", _seed(outcome), errors)
+    sale.start()
+    assert holding.wait(timeout=15)
+    seed.start()
+    await_a_lock_waiter()
+    release.set()
+    sale.join(timeout=30)
+    seed.join(timeout=30)
+
+    assert not errors, errors
+    assert outcome == {"seed": "refused"}
+    product.refresh_from_db()
+    assert product.stock_quantity == 7
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_sale_queued_behind_initial_stock_is_taken_from_it(monkeypatch):
+    product = _stocked_product("race_seed_first")
+    holding, release, errors, outcome = threading.Event(), threading.Event(), [], {}
+    real = inventory.set_stock
+
+    def seed_holds_the_catalog(*args, **kwargs):
+        if threading.current_thread().name == "seed" and not holding.is_set():
+            holding.set()
+            assert release.wait(timeout=20)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(inventory, "set_stock", seed_holds_the_catalog)
+    seed = in_thread("seed", _seed(outcome), errors)
+    sale = in_thread("sale", lambda: _buy(product, 3, 2), errors)
+    seed.start()
+    assert holding.wait(timeout=15)
+    sale.start()
+    await_a_lock_waiter()
+    release.set()
+    seed.join(timeout=30)
+    sale.join(timeout=30)
+
+    assert not errors, errors
+    assert outcome == {"seed": "applied"}
+    product.refresh_from_db()
+    assert product.stock_quantity == 47
