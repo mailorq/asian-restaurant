@@ -89,6 +89,13 @@ mode = sys.argv[1]
 if mode == "one":
     status, _, body = get("http://operations-api:9000/ops-api/orders")
     print(json.dumps({"status": status, "body": body[:120]}))
+elif mode == "backend-metrics":
+    # no redirect is followed: prometheus has to get the page itself on the plain internal hop
+    import http.client
+    connection = http.client.HTTPConnection("backend", 8000, timeout=10)
+    connection.request("GET", "/metrics")
+    response = connection.getresponse()
+    print(json.dumps({"status": response.status, "django": b"django_http_requests" in response.read()}))
 elif mode == "burst":
     with cf.ThreadPoolExecutor(60) as ex:
         results = list(ex.map(lambda _: get("http://operations-api:9000/ops-api/orders"), range(60)))
@@ -140,6 +147,9 @@ EmployeeAuthorization.objects.update_or_create(subject_id=4242, defaults={'authz
 baseline="$(client one)"
 grep -q '"status": 200' <<<"$baseline" || fail "an authorized request does not pass before the test: $baseline"
 echo "OK an authorized request passes: identity signs, operations verifies through the backend's jwks"
+scrape="$(client backend-metrics)"
+[ "$scrape" = '{"status": 200, "django": true}' ] || fail "prometheus cannot scrape the backend on the internal hop: $scrape"
+echo "OK the backend's metrics answer 200 on the internal hop, not a redirect to https"
 
 # processes and threads in the api container, the reading cat included, so readings compare like for like
 threads() { dc exec -T operations-api cat /sys/fs/cgroup/pids.current; }

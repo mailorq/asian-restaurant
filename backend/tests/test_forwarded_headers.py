@@ -39,6 +39,23 @@ def test_the_public_keys_are_served_on_the_internal_plain_http_hop(client, setti
     assert response.json()["keys"]
 
 
+def test_the_metrics_are_served_on_the_internal_plain_http_hop(client, settings):
+    # prometheus scrapes backend:8000 inside the network, where there is no tls to redirect to
+    settings.SECURE_SSL_REDIRECT = True
+
+    response = client.get("/metrics", HTTP_HOST="backend:8000")
+
+    assert response.status_code == 200
+    assert b"django_http_requests" in response.content
+
+
+def test_only_the_internal_endpoints_skip_the_https_redirect(client, settings):
+    settings.SECURE_SSL_REDIRECT = True
+
+    assert client.get("/api/menu/products", HTTP_HOST="backend:8000").status_code == 301
+    assert client.get("/metricsx", HTTP_HOST="backend:8000").status_code == 301
+
+
 @pytest.mark.django_db
 def test_two_clients_behind_the_ingress_get_their_own_rate_limit_bucket(client, settings):
     settings.RATELIMIT_TRUST_XFF = True
