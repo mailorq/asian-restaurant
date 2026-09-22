@@ -180,5 +180,5 @@ def test_employee_token_works_with_csrf(employee_user):
     csrf_client.force_login(employee_user)
     csrf_client.get("/api/auth/csrf")
     token = csrf_client.cookies["csrftoken"].value
-    resp = csrf_client.post("/api/auth/employee-token", HTTP_X_CSRFTOKEN=token)
+    resp = csrf_client.post("/api/auth/employee-token", content_type="application/json", HTTP_X_CSRFTOKEN=token)
     assert resp.status_code == 200 and resp.json()["token"]

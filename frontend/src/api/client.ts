@@ -16,12 +16,24 @@ function getCookie(name: string): string | null {
   return match ? decodeURIComponent(match[2]) : null;
 }
 
+// every write needs the token, a guest's first one included, so a visitor without the cookie fetches it first
+async function csrfToken(): Promise<string | null> {
+  const current = getCookie("csrftoken");
+  if (current) return current;
+  try {
+    await fetch("/api/auth/csrf", { credentials: "same-origin" });
+  } catch {
+    return null;
+  }
+  return getCookie("csrftoken");
+}
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
   if (init.body) headers.set("Content-Type", "application/json");
   if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
-    const csrf = getCookie("csrftoken");
+    const csrf = await csrfToken();
     if (csrf) headers.set("X-CSRFToken", csrf);
   }
 

@@ -40,6 +40,7 @@ MIDDLEWARE = [
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
+    "config.middleware.ApiWriteGuard",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
@@ -83,10 +84,18 @@ DATABASES["default"].setdefault("OPTIONS", {})["pool"] = {
     "timeout": 5,
 }
 
+# every redis client of the process: a stalled redis costs a request at most a second of its thread, its concurrency slot and the pooled database connection it may hold
+REDIS_CLIENT_OPTIONS = {
+    "socket_connect_timeout": 1.0,
+    "socket_timeout": 1.0,
+    "health_check_interval": 30,
+}
+
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
         "LOCATION": env("REDIS_URL", default="redis://redis:6379/1"),
+        "OPTIONS": REDIS_CLIENT_OPTIONS,
     }
 }
 
@@ -179,7 +188,7 @@ SESSION_COOKIE_SECURE = env.bool("DJANGO_COOKIE_SECURE", default=not DEBUG)
 CSRF_COOKIE_SECURE = env.bool("DJANGO_COOKIE_SECURE", default=not DEBUG)
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 # public keys only: operations fetches them from backend:8000 inside the network, where there is no tls to redirect to
-SECURE_REDIRECT_EXEMPT = [r"^api/auth/jwks$"]
+SECURE_REDIRECT_EXEMPT = [r"^api/auth/jwks$", r"^metrics$"]
 
 if not DEBUG:
     # on unless deliberately disabled; SECURE_PROXY_SSL_HEADER above is what makes it correct behind the TLS ingress, and a stack reachable over plain HTTP is the failure this prevents

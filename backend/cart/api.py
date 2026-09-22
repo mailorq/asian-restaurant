@@ -2,7 +2,6 @@ import uuid
 
 from django.conf import settings
 from django.http import HttpResponse
-from django.middleware.csrf import CsrfViewMiddleware
 from ninja import Router, Status
 from ninja.errors import HttpError
 
@@ -18,19 +17,6 @@ WRITE_LIMIT = dict(scope="cart_write", limit=60, window=60)
 COOKIE_NAME = "cartid"
 COOKIE_SALT = "cart"
 COOKIE_PATH = "/api/cart"
-
-SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
-
-# The cart router carries no Ninja auth (guests are allowed), so Ninja marks its
-# operations csrf-exempt. We still enforce CSRF by hand for authenticated writes.
-_csrf = CsrfViewMiddleware(lambda request: HttpResponse())
-
-
-def _enforce_csrf(request) -> None:
-    reason = _csrf.process_view(request, None, (), {})
-    if reason is not None:
-        raise HttpError(403, "CSRF-проверка не пройдена")
-
 
 def _read_cookie(request) -> str | None:
     try:
@@ -62,8 +48,6 @@ async def _resolve(request, response: HttpResponse) -> str:
     """
     user = await request.auser()
     if user.is_authenticated:
-        if request.method not in SAFE_METHODS:
-            _enforce_csrf(request)
         key = service.user_key(user.id)
         guest_id = _read_cookie(request)
         if guest_id:
