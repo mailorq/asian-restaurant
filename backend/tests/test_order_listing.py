@@ -128,3 +128,27 @@ def test_orders_sharing_a_timestamp_still_page_in_a_stable_order(api, employee_u
 
     assert seen == sorted(seen, reverse=True), "tied created_at leaves the page boundary undefined"
     assert len(set(seen)) == 6
+
+
+FAR = 100_000_000_000_000_000_000
+
+
+@pytest.mark.parametrize(
+    "path", [CUSTOMER_PATH, EMPLOYEE_PATH, "/api/employee/users", "/api/employee/users/{id}/orders"]
+)
+def test_a_page_past_the_offset_ceiling_is_refused_before_the_database(api, employee_user, path):
+    api.force_login(employee_user)
+
+    response = api.get(f"{path.format(id=employee_user.id)}?page={FAR}")
+
+    assert response.status_code == 422
+
+
+def test_the_deepest_page_under_the_ceiling_still_answers(api, employee_user):
+    from config.pagination import MAX_OFFSET
+
+    api.force_login(employee_user)
+    deepest = MAX_OFFSET // 20 + 1
+
+    assert api.get(f"{EMPLOYEE_PATH}?page={deepest}&page_size=20").status_code == 200
+    assert api.get(f"{EMPLOYEE_PATH}?page={deepest + 1}&page_size=20").status_code == 422

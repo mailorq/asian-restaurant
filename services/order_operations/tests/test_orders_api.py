@@ -117,3 +117,13 @@ def test_the_listing_still_needs_a_token():
     _orders(2)
 
     assert Client().get(PATH).status_code == 401
+
+
+def test_a_page_past_the_offset_ceiling_is_refused_before_the_database(headers):
+    from operations.pagination import MAX_OFFSET
+
+    deepest = MAX_OFFSET // 20 + 1
+
+    assert Client().get(f"{PATH}?page=100000000000000000000", headers=headers).status_code == 422
+    assert Client().get(f"{PATH}?page={deepest}&page_size=20", headers=headers).status_code == 200
+    assert Client().get(f"{PATH}?page={deepest + 1}&page_size=20", headers=headers).status_code == 422
