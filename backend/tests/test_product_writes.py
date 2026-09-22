@@ -1,13 +1,11 @@
 import json
 import threading
-import time
 from types import SimpleNamespace
 
 import pytest
 from django.contrib import admin as dj_admin
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
-from django.db import connection
 
 from accounts.roles import StaffRole
 from cart import service as cart_service
@@ -17,6 +15,7 @@ from menu.models import Product, StockAdjustment
 from orders import service as order_service
 from orders.models import OrderOutbox
 from tests.admin_forms import rendered_form
+from tests.concurrency import await_a_lock_waiter, in_thread
 
 ADDRESS = "ул. Пушкина, 12"
 
@@ -169,32 +168,6 @@ def _staff():
     return account
 
 
-def _in_thread(name, work, errors):
-    def run():
-        try:
-            work()
-        except Exception as exc:
-            errors.append(exc)
-        finally:
-            connection.close()
-
-    return threading.Thread(target=run, name=name)
-
-
-def _await_a_lock_waiter(timeout=15.0):
-    deadline = time.monotonic() + timeout
-    with connection.cursor() as cursor:
-        while time.monotonic() < deadline:
-            cursor.execute(
-                "select count(*) from pg_stat_activity where wait_event_type = 'Lock' "
-                "and datname = current_database()"
-            )
-            if cursor.fetchone()[0]:
-                return
-            time.sleep(0.05)
-    raise AssertionError("the second writer never queued on the product row")
-
-
 @pytest.mark.django_db(transaction=True)
 def test_a_correction_queued_behind_a_sale_is_refused_after_it(monkeypatch):
     staff = _staff()
@@ -227,12 +200,12 @@ def test_a_correction_queued_behind_a_sale_is_refused_after_it(monkeypatch):
         except inventory.StaleProduct:
             outcome["correction"] = "refused"
 
-    sale = _in_thread("sale", lambda: _sell(product, 3, 201), errors)
-    correction = _in_thread("correction", correct, errors)
+    sale = in_thread("sale", lambda: _sell(product, 3, 201), errors)
+    correction = in_thread("correction", correct, errors)
     sale.start()
     assert holding.wait(timeout=15)
     correction.start()
-    _await_a_lock_waiter()
+    await_a_lock_waiter()
     release.set()
     sale.join(timeout=30)
     correction.join(timeout=30)
@@ -268,18 +241,18 @@ def test_a_sale_queued_behind_a_correction_is_taken_from_the_corrected_stock(mon
 
     monkeypatch.setattr(inventory, "_emit", correction_holds_the_row)
 
-    correction = _in_thread(
+    correction = in_thread(
         "correction",
         lambda: inventory.set_stock(
             product.id, 20, reason="инвентаризация", staff=staff, expected_version=seen
         ),
         errors,
     )
-    sale = _in_thread("sale", lambda: _sell(product, 3, 202), errors)
+    sale = in_thread("sale", lambda: _sell(product, 3, 202), errors)
     correction.start()
     assert holding.wait(timeout=15)
     sale.start()
-    _await_a_lock_waiter()
+    await_a_lock_waiter()
     release.set()
     correction.join(timeout=30)
     sale.join(timeout=30)
@@ -314,3 +287,30 @@ def test_an_image_uploaded_in_the_admin_is_stored_and_kept(
     assert product.image.name.startswith("products/ramen")
     assert (tmp_path / product.image.name).read_bytes() == png.getvalue()
     assert (product.stock_quantity, product.version) == (10, 1)
+
+
+@pytest.mark.django_db
+def test_the_code_operations_keys_a_product_by_cannot_be_changed_in_the_admin(
+    admin_client, make_product
+):
+    product = make_product(stock=10)
+    url = f"/admin/menu/product/{product.pk}/change/"
+    form = rendered_form(admin_client, url)
+    form["code"] = "renamed"
+
+    response = admin_client.post(url, form)
+
+    assert response.status_code == 302
+    product.refresh_from_db()
+    assert product.code != "renamed"
+
+
+@pytest.mark.django_db
+def test_the_stock_writer_refuses_a_code_change(make_product):
+    product = make_product(stock=10)
+
+    with pytest.raises(ValueError):
+        inventory.update_product(product.id, {"code": "renamed"}, reason="rename")
+
+    product.refresh_from_db()
+    assert product.code != "renamed"

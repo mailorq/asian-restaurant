@@ -1,15 +1,15 @@
 from django import forms
 from django.contrib import admin
 
+from common.forms import RenderedValuesForm
 from menu import inventory
 from menu.models import Ingredient, Product, StockAdjustment
 
 _ROW_FIELDS = frozenset(f.name for f in Product._meta.concrete_fields)
 
 
-class ProductAdminForm(forms.ModelForm):
-    # the version the form was rendered at. name and stock carry their rendered value along, so the form
-    # knows what the admin changed, and a sale or edit made while it was open is reported, not overwritten
+class ProductAdminForm(RenderedValuesForm, forms.ModelForm):
+    # the version the form was rendered at: name and stock are written only against it, so a sale or edit made while it was open is reported, not overwritten
     expected_version = forms.IntegerField(widget=forms.HiddenInput, required=False)
 
     class Meta:
@@ -32,8 +32,6 @@ class ProductAdminForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         if self.instance.pk and not self.is_bound:
             self.fields["expected_version"].initial = self.instance.version
-        for name in inventory.PROJECTED_FIELDS & set(self.fields):
-            self.fields[name].show_hidden_initial = True
 
     def clean(self):
         cleaned = super().clean()
@@ -52,6 +50,12 @@ class ProductAdminForm(forms.ModelForm):
         return cleaned
 
 
+class ProductChangelistForm(RenderedValuesForm, forms.ModelForm):
+    class Meta:
+        model = Product
+        fields = ("price", "is_active", "is_featured")
+
+
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
     form = ProductAdminForm
@@ -61,6 +65,10 @@ class ProductAdmin(admin.ModelAdmin):
     search_fields = ("code", "name", "description")
     filter_horizontal = ("ingredients",)
     readonly_fields = ("version",)
+
+    def get_readonly_fields(self, request, obj=None):
+        # operations knows a product by its code, and no event carries a rename
+        return ("version", "code") if obj else ("version",)
 
     def save_model(self, request, obj, form, change):
         if not change:
@@ -79,6 +87,18 @@ class ProductAdmin(admin.ModelAdmin):
             obj.pk, changes, expected_version=expected, reason="admin edit", staff=request.user
         )
         obj.refresh_from_db()
+
+    def get_changelist_form(self, request, **kwargs):
+        kwargs.setdefault("form", ProductChangelistForm)
+        return super().get_changelist_form(request, **kwargs)
+
+    def save_related(self, request, form, formsets, change):
+        if change:
+            form.save_edited_m2m()
+        else:
+            form.save_m2m()
+        for formset in formsets:
+            self.save_formset(request, form, formset, change=change)
 
     def has_delete_permission(self, request, obj=None):
         # hard delete would leave an obsolete projection with no deletion event; deactivate instead

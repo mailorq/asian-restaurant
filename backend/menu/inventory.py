@@ -34,6 +34,8 @@ def record_stock_change(product: Product, new_quantity: int, *, reason: str, sta
 
 # fields operations projects: a change to any of them bumps the version once and emits one event
 PROJECTED_FIELDS = frozenset({"name", "stock_quantity"})
+# operations knows a product by its code, and the version belongs to this writer
+FIXED_FIELDS = frozenset({"code", "version"})
 
 
 class StaleProduct(Exception):
@@ -47,6 +49,9 @@ def update_product(
     product_id: int, changes: dict, *, reason: str, staff=None, expected_version: int | None = None
 ) -> Product | None:
     # the one writer of an existing product row: it locks the row before reading it, writes only the fields it was given, and refuses a caller whose view of name or stock is older than the row
+    fixed = FIXED_FIELDS.intersection(changes)
+    if fixed:
+        raise ValueError(f"{', '.join(sorted(fixed))} of an existing product cannot change")
     product = Product.objects.select_for_update().filter(id=product_id).first()
     if product is None:
         return None
