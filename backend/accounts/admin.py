@@ -1,17 +1,38 @@
+from django import forms
 from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin
+from django.contrib.auth.forms import UserChangeForm
 from django.contrib.auth.models import Group
 
 from accounts import service as accounts_service
 from accounts.models import User
+from accounts.phone import to_e164
 from accounts.roles import LEGACY_GROUP, StaffRole
 
 _PROFILE_FIELDS = {"first_name", "phone"}
 _STAFF_GROUPS = [*StaffRole.values, LEGACY_GROUP]
 
 
+class CustomerChangeForm(UserChangeForm):
+    def clean_phone(self):
+        raw = self.cleaned_data.get("phone")
+        if not raw:
+            if self.instance.pk and self.instance.username == self.instance.phone:
+                raise forms.ValidationError(
+                    "Телефон служит логином этого аккаунта, очистить его нельзя"
+                )
+            return raw
+        number = to_e164(raw)
+        if number is None:
+            raise forms.ValidationError("Некорректный номер телефона")
+        if accounts_service.phone_owner(number, excluding=self.instance.pk) is not None:
+            raise forms.ValidationError("Этот номер уже принадлежит другому аккаунту")
+        return number
+
+
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
+    form = CustomerChangeForm
     fieldsets = UserAdmin.fieldsets + (("Contact", {"fields": ("phone", "customer_version", "authz_version")}),)
     list_display = ("username", "phone", "email", "is_staff", "is_active")
     search_fields = ("username", "phone", "email")

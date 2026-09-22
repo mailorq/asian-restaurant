@@ -45,7 +45,10 @@ def test_product_admin_stock_edit_routes_through_service(make_product, employee_
     product = make_product(stock=5)
     ma = ProductAdmin(Product, dj_admin.site)
     product.stock_quantity = 20  # what the admin form submitted
-    ma.save_model(_req(employee_user), product, SimpleNamespace(changed_data=["stock_quantity"]), change=True)
+    form = SimpleNamespace(
+        changed_data=["stock_quantity"], cleaned_data={"expected_version": product.version}
+    )
+    ma.save_model(_req(employee_user), product, form, change=True)
 
     product.refresh_from_db()
     assert product.stock_quantity == 20 and product.version == 2
@@ -69,7 +72,10 @@ def test_product_admin_rename_bumps_version_and_emits_event(make_product, employ
     start = product.version
     ma = ProductAdmin(Product, dj_admin.site)
     product.name = "Рамен Делюкс"
-    ma.save_model(_req(employee_user), product, SimpleNamespace(changed_data=["name"]), change=True)
+    form = SimpleNamespace(
+        changed_data=["name"], cleaned_data={"expected_version": product.version}
+    )
+    ma.save_model(_req(employee_user), product, form, change=True)
 
     product.refresh_from_db()
     assert product.name == "Рамен Делюкс" and product.version == start + 1

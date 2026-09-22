@@ -1,4 +1,3 @@
-import phonenumbers
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
@@ -11,26 +10,17 @@ from ninja.security import django_auth
 from accounts import jwt_service
 from accounts import service as accounts_service
 from accounts.models import User
+from accounts.phone import to_e164
 from accounts.schemas import LoginIn, MessageOut, RegisterIn, UserOut
 from common.ratelimit import rate_limit
 
 router = Router(tags=["auth"])
 
 
-def _to_e164(raw: str) -> str | None:
-    try:
-        parsed = phonenumbers.parse(raw, "UA")
-    except phonenumbers.NumberParseException:
-        return None
-    if not phonenumbers.is_valid_number(parsed):
-        return None
-    return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
-
-
 @router.post("/register", response=UserOut, auth=None)
 @rate_limit("register", limit=10, window=60)
 def register(request, data: RegisterIn):
-    phone = _to_e164(data.phone)
+    phone = to_e164(data.phone)
     if phone is None:
         raise HttpError(400, "Некорректный номер телефона")
     name = data.name.strip()
@@ -57,7 +47,7 @@ def register(request, data: RegisterIn):
 @router.post("/login", response=UserOut, auth=None)
 @rate_limit("login", limit=5, window=10)
 def login_view(request, data: LoginIn):
-    phone = _to_e164(data.phone)
+    phone = to_e164(data.phone)
     user = authenticate(request, username=phone, password=data.password) if phone else None
     if user is None:
         raise HttpError(401, "Неверный телефон или пароль")
