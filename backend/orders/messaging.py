@@ -38,7 +38,13 @@ def connect() -> pika.BlockingConnection:
 
 
 def declare_topology(channel: "pika.channel.Channel") -> None:
+    # all the relay needs: every consumer declares and binds its own queues, so no queue collects events nobody reads
     channel.exchange_declare(exchange=EXCHANGE, exchange_type="topic", durable=True)
+
+
+def declare_legacy_topology(channel: "pika.channel.Channel") -> None:
+    # the in-storefront projection's queues, declared by that consumer alone; production does not run it, and retire_legacy_queue removes them from a broker
+    declare_topology(channel)
     channel.exchange_declare(exchange=DLX, exchange_type="topic", durable=True)
     channel.exchange_declare(exchange=RETRY_EXCHANGE, exchange_type="topic", durable=True)
 

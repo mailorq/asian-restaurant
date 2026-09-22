@@ -38,7 +38,8 @@ class Command(BaseCommand):
     def handle(self, *args, **options) -> None:
         connection = messaging.connect()
         channel = connection.channel()
-        messaging.declare_topology(channel)
+        messaging.declare_legacy_topology(channel)
+        messaging.converge_legacy_binding(channel)
         channel.confirm_delivery()  # retry re publishes must be broker confirmed
         channel.basic_qos(prefetch_count=10)
         channel.basic_consume(queue=messaging.OPS_QUEUE, on_message_callback=self._on_message)

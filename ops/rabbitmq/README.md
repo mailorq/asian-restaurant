@@ -77,7 +77,7 @@ Both DLQ alerts have a matching operator action; neither tool consumes anything 
 
 | queue | command |
 |---|---|
-| `orders.ops.dlq`, `commands.orders.dlq` | `backend: manage.py dlq <queue> --list \| --replay N \| --drop N --yes --reason ...` |
+| `commands.orders.dlq`, and `orders.ops.dlq` where the legacy consumer runs (dev only) | `backend: manage.py dlq <queue> --list \| --replay N \| --drop N --yes --reason ...` |
 | `operations.projection.dlq` | `operations: manage.py dlq --list \| --replay N \| --drop N --yes --reason ...` |
 
 Listing prints identity only - event type, reason, message id, payload sha256 and size - because
