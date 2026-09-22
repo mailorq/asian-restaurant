@@ -16,8 +16,11 @@ class OrderOutbox(models.Model):
     class Status(models.TextChoices):
         PENDING = "pending", "В очереди"
         PUBLISHED = "published", "Отправлено"
-        # only an operator sets this; the relay retries a failed row forever
+        # closed by an operator: never published, and it holds the later events of its aggregate
+        # until it is retried or the aggregate is resynced
         FAILED = "failed", "Снято оператором"
+        # replaced by a resync with the current state of its aggregate; holds nothing
+        SUPERSEDED = "superseded", "Заменено состоянием"
 
     # ids repeat across aggregates (order 5, customer 5), so an aggregate is the pair of type and id
     class AggregateType(models.TextChoices):
@@ -55,11 +58,11 @@ class OrderOutbox(models.Model):
         ordering = ["created_at"]
         indexes = [
             models.Index(fields=["status", "next_attempt_at"]),
-            # the relay asks for an earlier pending event of the same aggregate on every claim
+            # the relay asks for an earlier unsent event of the same aggregate on every claim
             models.Index(
                 fields=["aggregate_type", "aggregate_id", "id"],
-                condition=models.Q(status="pending"),
-                name="outbox_pending_aggregate_idx",
+                condition=models.Q(status__in=["pending", "failed"]),
+                name="outbox_unsent_aggregate_idx",
             ),
         ]
         constraints = [

@@ -150,10 +150,10 @@ class Command(BaseCommand):
             & (Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now))
             & (Q(locked_until__isnull=True) | Q(locked_until__lt=now))
         )
-        # consumers apply an aggregate's events in version order, so only its oldest pending event may go:
-        # a later one waits out the earlier one's backoff and lease, whichever worker holds it
+        # consumers apply an aggregate's events in version order, so only its oldest unsent event may go:
+        # a later one waits out the earlier one's backoff and lease, and a closed one until an operator acts
         earlier = OrderOutbox.objects.filter(
-            status=OrderOutbox.Status.PENDING,
+            status__in=(OrderOutbox.Status.PENDING, OrderOutbox.Status.FAILED),
             aggregate_type=OuterRef("aggregate_type"),
             aggregate_id=OuterRef("aggregate_id"),
             id__lt=OuterRef("id"),

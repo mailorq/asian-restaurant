@@ -2,6 +2,8 @@ from datetime import timedelta
 from unittest.mock import Mock
 
 import pytest
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
@@ -70,12 +72,110 @@ def test_the_same_id_in_another_aggregate_type_is_not_held_back():
     assert _status(customer) == OrderOutbox.Status.PUBLISHED
 
 
-def test_a_row_the_operator_failed_no_longer_holds_its_aggregate():
+def test_a_discarded_row_keeps_holding_its_aggregate():
     _row("order", "8", 1, "order.created", status=OrderOutbox.Status.FAILED)
     later = _row("order", "8", 2)
 
+    assert _drain() == []
+    assert _status(later) == OrderOutbox.Status.PENDING
+
+
+def test_a_retried_discarded_row_goes_first_and_releases_the_rest():
+    failed = _row("order", "9", 1, "order.created", status=OrderOutbox.Status.FAILED)
+    later = _row("order", "9", 2)
+
+    call_command("outbox", "--retry", str(failed.pk))
+
+    assert _drain() == [1]
     assert _drain() == [2]
     assert _status(later) == OrderOutbox.Status.PUBLISHED
+
+
+def _placed_and_confirmed_order(user, make_product, seed_cart):
+    from orders import service as order_service
+
+    product = make_product(stock=10)
+    seed_cart(user.id, {product.id: 1})
+    order = order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-resync")
+    order_service.transition(order, "confirmed", expected_status="created")
+    return order
+
+
+def _order_rows(order):
+    return OrderOutbox.objects.filter(aggregate_type="order", aggregate_id=str(order.id))
+
+
+def test_resync_replaces_the_unsent_history_of_an_aggregate_with_its_current_state(
+    user, make_product, seed_cart
+):
+    order = _placed_and_confirmed_order(user, make_product, seed_cart)
+    created = _order_rows(order).get(event_type="order.created")
+    call_command("outbox", "--discard", str(created.pk), "--yes", "--reason", "rejected payload")
+    assert _drain_order_events(order) == []
+
+    call_command("outbox", "--resync", f"order:{order.id}", "--yes", "--reason", "rejected payload")
+
+    assert _drain_order_events(order) == [("order.created", 2, "confirmed")]
+    assert set(_order_rows(order).exclude(status="published").values_list("status", flat=True)) == {
+        OrderOutbox.Status.SUPERSEDED
+    }
+
+
+def _drain_order_events(order):
+    relay = Relay()
+    relay._publisher.publish = Mock()
+    relay._drain("w1")
+    return [
+        (call.args[1], call.args[3]["aggregate_version"], call.args[2].get("status"))
+        for call in relay._publisher.publish.call_args_list
+        if call.args[3].get("aggregate_version")
+        and str(call.args[2].get("order_id")) == str(order.id)
+    ]
+
+
+def test_resync_refuses_an_aggregate_that_has_nothing_unsent(user, make_product, seed_cart):
+    order = _placed_and_confirmed_order(user, make_product, seed_cart)
+    _order_rows(order).update(status=OrderOutbox.Status.PUBLISHED)
+
+    with pytest.raises(CommandError, match="no unsent events"):
+        call_command("outbox", "--resync", f"order:{order.id}", "--yes", "--reason", "nothing")
+
+    assert not _order_rows(order).filter(status=OrderOutbox.Status.PENDING).exists()
+
+
+def test_resync_refuses_when_a_consumer_already_holds_the_current_version(
+    user, make_product, seed_cart
+):
+    order = _placed_and_confirmed_order(user, make_product, seed_cart)
+    _order_rows(order).filter(event_type="order.created").update(status=OrderOutbox.Status.FAILED)
+    _order_rows(order).filter(event_type="order.status_changed").update(
+        status=OrderOutbox.Status.PUBLISHED
+    )
+
+    with pytest.raises(CommandError, match="already published"):
+        call_command("outbox", "--resync", f"order:{order.id}", "--yes", "--reason", "late")
+
+    assert _order_rows(order).filter(status=OrderOutbox.Status.FAILED).count() == 1
+
+
+def test_resync_of_a_snapshot_run_abandons_it_without_emitting():
+    started = _row("snapshot", "run-1", 1, "snapshot.control", status=OrderOutbox.Status.FAILED)
+    completed = _row("snapshot", "run-1", 1, "snapshot.control")
+
+    call_command("outbox", "--resync", "snapshot:run-1", "--yes", "--reason", "abandoned")
+
+    assert {_status(started), _status(completed)} == {OrderOutbox.Status.SUPERSEDED}
+    assert not OrderOutbox.objects.filter(status=OrderOutbox.Status.PENDING).exists()
+
+
+def test_the_listing_names_a_discarded_row_that_holds_later_events(capsys):
+    failed = _row("order", "11", 1, "order.created", status=OrderOutbox.Status.FAILED)
+    _row("order", "11", 2)
+
+    call_command("outbox", "--list")
+
+    out = capsys.readouterr().out
+    assert f"#{failed.pk}" in out and "holds 1 later event" in out
 
 
 def test_every_writer_names_its_aggregate_type():
