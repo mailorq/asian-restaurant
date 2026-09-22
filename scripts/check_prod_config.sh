@@ -108,8 +108,14 @@ if bare:
     failed.append("these locations answer without the security headers: " + "; ".join(bare))
 if "server_tokens off;" not in conf:
     failed.append("nginx announces its version")
-if not re.search(r"location = /admin/login/ \{[^}]*limit_req zone=", conf, re.S):
-    failed.append("the admin password form is not rate limited")
+# behind the ingress the connecting address is the ingress's, so such a limit is one bucket for every client
+if re.search(r"limit_req_zone\s+\$binary_remote_addr", conf):
+    failed.append("a request limit keyed on the connecting address is one shared bucket behind the ingress")
+deploy = pathlib.Path("DEPLOY.md").read_text(encoding="utf-8")
+for what, needle in (("the ingress limit on the admin login", "POST /admin/login/"),
+                     ("the ingress hsts for the whole host", "Strict-Transport-Security: max-age=31536000")):
+    if needle not in deploy:
+        failed.append("DEPLOY.md no longer requires " + what)
 if failed:
     print("FAIL: " + "; ".join(failed))
     raise SystemExit(1)
