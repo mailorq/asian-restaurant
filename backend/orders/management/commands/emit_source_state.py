@@ -79,6 +79,7 @@ class Command(BaseCommand):
 
     def _control(self, run_id: str, phase: str, as_of, counts: dict | None = None) -> None:
         OrderOutbox.objects.create(
+            aggregate_type=OrderOutbox.AggregateType.SNAPSHOT,
             aggregate_id=run_id,
             aggregate_version=1,
             event_type="snapshot.control",

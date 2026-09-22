@@ -44,7 +44,7 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "storefront outbox rows are not publishable"
-          description: "{{ $value }} row(s) past their attempt threshold; inspect with `manage.py outbox --list`."
+          description: "{{ $value }} row(s) past their attempt threshold, each holding back the later events of its aggregate; inspect with `manage.py outbox --list`."
 
       - alert: CommandConsumerDown
         expr: commands_consumer_connected == 0 or absent(commands_consumer_connected)

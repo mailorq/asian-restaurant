@@ -37,6 +37,7 @@ def emitted():
 
 def _row():
     return OrderOutbox.objects.create(
+        aggregate_type="order",
         aggregate_id="1", event_type="order.created", routing_key="order.created",
         payload={"order_id": 1, "phone": PHONE, "address": ADDRESS},
     )

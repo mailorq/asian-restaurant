@@ -132,6 +132,7 @@ def test_a_failed_publish_is_logged_with_the_row_identifiers(emitted, monkeypatc
     from orders.management.commands.publish_outbox import Command as Relay
 
     row = OrderOutbox.objects.create(
+        aggregate_type="order",
         aggregate_id="1", event_type="order.created", routing_key="order.created",
         payload={"order_id": 1},
     )

@@ -73,6 +73,7 @@ def _finalize(claim: CommandInbox, *, event_type: str, payload: dict, order: Ord
     claim.save(update_fields=["outcome_type", "outcome_data"])
     OrderOutbox.objects.create(
         event_id=claim.outcome_event_id,
+        aggregate_type=OrderOutbox.AggregateType.ORDER,
         aggregate_id=str(payload["order_id"]),
         aggregate_version=_order_version(order),
         event_type=event_type,

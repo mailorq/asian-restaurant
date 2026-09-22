@@ -56,11 +56,22 @@ def _geocode_safe(raw_address: str) -> geo.GeocodeResult:
         return geo.GeocodeResult(found=False)
 
 
+def _source_cart_id(user, cart_id: str) -> str:
+    return f"u:{user.id}:{cart_id}"
+
+
 @transaction.atomic
 def _create_order(
-    user, cart_items, cart_version, raw_address, geo_result, payment_method, idempotency_key, recipient_name
+    user,
+    cart_items,
+    source_cart_id,
+    cart_version,
+    raw_address,
+    geo_result,
+    payment_method,
+    idempotency_key,
+    recipient_name,
 ):
-    source_cart_id = f"u:{user.id}"
     locked = {
         p.id: p
         for p in Product.objects.select_for_update()
@@ -131,6 +142,7 @@ def _create_order(
         order=order, from_status="", to_status=Order.Status.CREATED, changed_by=user, note="checkout"
     )
     OrderOutbox.objects.create(
+        aggregate_type=OrderOutbox.AggregateType.ORDER,
         aggregate_id=str(order.id),
         aggregate_version=1,
         event_type="order.created",
@@ -142,26 +154,28 @@ def _create_order(
 
 def _recover_uncleared_cart(user, order: Order) -> None:
     key = cart_service.user_key(user.id)
-    items, version = cart_service.read_sync(key)
-    if version != order.source_cart_version or not items:
+    cart = cart_service.read_sync(key)
+    if not cart.items or cart.version != order.source_cart_version:
         return
-    if items != {item.product_id: item.quantity for item in order.items.all()}:
+    if _source_cart_id(user, cart.cart_id) != order.source_cart_id:
         return
-    cart_service.clear_sync(key, version)
+    if cart.items != {item.product_id: item.quantity for item in order.items.all()}:
+        return
+    cart_service.clear_sync(key, cart.version, cart.cart_id)
 
 
 def checkout(user, raw_address: str, payment_method: str, idempotency_key: str, recipient_name: str = "") -> Order:
-    source_cart_id = f"u:{user.id}"
-
     existing = Order.objects.filter(user=user, idempotency_key=idempotency_key).first()
     if existing is not None:
         _recover_uncleared_cart(user, existing)
         return existing
 
     key = cart_service.user_key(user.id)
-    cart_items, cart_version = cart_service.read_sync(key)
+    cart = cart_service.read_sync(key)
+    cart_items, cart_version = cart.items, cart.version
     if not cart_items:
         raise CheckoutError("empty_cart", "Корзина пуста")
+    source_cart_id = _source_cart_id(user, cart.cart_id)
 
     existing = Order.objects.filter(source_cart_id=source_cart_id, source_cart_version=cart_version).first()
     if existing is not None:
@@ -172,7 +186,15 @@ def checkout(user, raw_address: str, payment_method: str, idempotency_key: str, 
 
     try:
         order = _create_order(
-            user, cart_items, cart_version, raw_address, geo_result, payment_method, idempotency_key, recipient_name
+            user,
+            cart_items,
+            source_cart_id,
+            cart_version,
+            raw_address,
+            geo_result,
+            payment_method,
+            idempotency_key,
+            recipient_name,
         )
     except IntegrityError:
         # a concurrent submit won the unique(idempotency_key) / (source_cart_id, version) race
@@ -232,6 +254,7 @@ def transition(order: Order, new_status: str, changed_by=None, note: str = "",
         order=locked, from_status=previous, to_status=new_status, changed_by=changed_by, note=note
     )
     OrderOutbox.objects.create(
+        aggregate_type=OrderOutbox.AggregateType.ORDER,
         aggregate_id=str(locked.id),
         aggregate_version=OrderStatusHistory.objects.filter(order=locked).count(),
         event_type="order.status_changed",
@@ -246,6 +269,7 @@ def emit_order_state(order: Order, *, snapshot: bool = False, run_id: str = "") 
     # order aggregate version is the length of its status history
     items = list(order.items.select_related("product").all())
     OrderOutbox.objects.create(
+        aggregate_type=OrderOutbox.AggregateType.ORDER,
         aggregate_id=str(order.id),
         aggregate_version=OrderStatusHistory.objects.filter(order=order).count(),
         event_type="order.created",

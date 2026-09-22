@@ -8,6 +8,7 @@ STOCK_EVENT = "inventory.stock_changed"
 
 def _emit(product: Product, *, snapshot: bool = False, run_id: str = "") -> None:
     OrderOutbox.objects.create(
+        aggregate_type=OrderOutbox.AggregateType.PRODUCT,
         aggregate_id=product.code,
         aggregate_version=product.version,
         event_type=STOCK_EVENT,
@@ -31,35 +32,65 @@ def record_stock_change(product: Product, new_quantity: int, *, reason: str, sta
     _emit(product)
 
 
+# fields operations projects: a change to any of them bumps the version once and emits one event
+PROJECTED_FIELDS = frozenset({"name", "stock_quantity"})
+
+
+class StaleProduct(Exception):
+    def __init__(self, product: Product) -> None:
+        self.product = product
+        super().__init__(f"product {product.pk} is at version {product.version}")
+
+
 @transaction.atomic
-def set_product_state(product_id: int, *, name: str | None = None, stock: int | None = None,
-                      reason: str, staff=None) -> Product | None:
-    # single writer for the fields operations projects (name, stock): one version bump and
-    # one event per change so the operations product view never goes stale
+def update_product(
+    product_id: int, changes: dict, *, reason: str, staff=None, expected_version: int | None = None
+) -> Product | None:
+    # the one writer of an existing product row: it locks the row before reading it, writes only the fields it was given, and refuses a caller whose view of name or stock is older than the row
     product = Product.objects.select_for_update().filter(id=product_id).first()
     if product is None:
         return None
-    stock_changed = stock is not None and stock != product.stock_quantity
-    name_changed = name is not None and name != product.name
-    if not (stock_changed or name_changed):
-        return product
+    if expected_version is not None and product.version != expected_version:
+        raise StaleProduct(product)
     old_quantity = product.stock_quantity
-    if name_changed:
-        product.name = name
-    if stock_changed:
-        product.stock_quantity = stock
-    product.version += 1
-    product.save(update_fields=["name", "stock_quantity", "version"])
-    if stock_changed:
+    written = [
+        f
+        for f, value in changes.items()
+        if f not in PROJECTED_FIELDS or getattr(product, f) != value
+    ]
+    if not written:
+        return product
+    for field in written:
+        setattr(product, field, changes[field])
+    projected = PROJECTED_FIELDS.intersection(written)
+    if projected:
+        product.version += 1
+        written.append("version")
+    product.save(update_fields=written)
+    if "stock_quantity" in projected:
         StockAdjustment.objects.create(
-            product=product, staff=staff, old_quantity=old_quantity, new_quantity=stock, reason=reason
+            product=product, staff=staff, old_quantity=old_quantity, new_quantity=product.stock_quantity, reason=reason
         )
-    _emit(product)
+    if projected:
+        _emit(product)
     return product
 
 
-def set_stock(product_id: int, new_quantity: int, *, reason: str, staff=None) -> Product | None:
-    return set_product_state(product_id, stock=new_quantity, reason=reason, staff=staff)
+def set_stock(
+    product_id: int,
+    new_quantity: int,
+    *,
+    reason: str,
+    staff=None,
+    expected_version: int | None = None,
+) -> Product | None:
+    return update_product(
+        product_id,
+        {"stock_quantity": new_quantity},
+        reason=reason,
+        staff=staff,
+        expected_version=expected_version,
+    )
 
 
 def emit_state(product: Product, *, snapshot: bool = False, run_id: str = "") -> None:

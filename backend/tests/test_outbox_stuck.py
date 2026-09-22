@@ -31,6 +31,7 @@ class _Gauge:
 
 def _row(attempts=0, age_minutes=0, **kw):
     row = OrderOutbox.objects.create(
+        aggregate_type="order",
         aggregate_id=uuid.uuid4().hex[:8], event_type="order.created",
         routing_key="order.created", payload={"order_id": 1}, attempts=attempts, **kw
     )

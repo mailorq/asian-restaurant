@@ -118,9 +118,14 @@ def test_exhausted_retries_go_to_dlq(monkeypatch):
 
 
 # leased outbox relay
-def _outbox(**kw):
+def _outbox(aggregate_id="1", **kw):
     return OrderOutbox.objects.create(
-        aggregate_id="1", event_type="order.created", routing_key="order.created", payload={"order_id": 1}, **kw
+        aggregate_type="order",
+        aggregate_id=aggregate_id,
+        event_type="order.created",
+        routing_key="order.created",
+        payload={"order_id": 1},
+        **kw,
     )
 
 
@@ -153,8 +158,8 @@ def test_backoff_grows_with_attempts():
 
 
 def test_claim_leases_rows_so_a_second_worker_skips_them():
-    for _ in range(5):
-        _outbox()
+    for n in range(5):
+        _outbox(aggregate_id=str(n))
     relay = Relay()
     first = relay._claim("w1")
     assert len(first) == 5
@@ -209,13 +214,44 @@ def test_parallel_workers_do_not_double_claim():
     OrderOutbox.objects.all().delete()  # transaction=True: clean up explicitly
 
 
-def test_legacy_queue_is_bound_only_to_what_it_can_process():
+def test_the_relay_declares_its_exchange_and_no_queue():
     from unittest.mock import MagicMock
 
     from orders import messaging
 
     channel = MagicMock()
     messaging.declare_topology(channel)
+
+    channel.exchange_declare.assert_called_once_with(
+        exchange=messaging.EXCHANGE, exchange_type="topic", durable=True
+    )
+    channel.queue_declare.assert_not_called()
+    channel.queue_bind.assert_not_called()
+
+
+def test_relay_startup_leaves_the_legacy_queue_alone(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from orders import messaging
+    from orders.management.commands.publish_outbox import Command
+
+    connection = MagicMock()
+    monkeypatch.setattr(messaging, "connect", lambda: connection)
+    Command()._converge_topology()
+
+    channel = connection.channel.return_value
+    channel.queue_declare.assert_not_called()
+    channel.queue_bind.assert_not_called()
+    channel.queue_unbind.assert_not_called()
+
+
+def test_legacy_queue_is_bound_only_to_what_it_can_process():
+    from unittest.mock import MagicMock
+
+    from orders import messaging
+
+    channel = MagicMock()
+    messaging.declare_legacy_topology(channel)
 
     ops_binds = [
         c.kwargs["routing_key"]
@@ -264,6 +300,7 @@ def _pending_rows(count: int) -> None:
 
     for i in range(count):
         OrderOutbox.objects.create(
+            aggregate_type="order",
             aggregate_id=str(i), event_type="order.created",
             routing_key="order.created", payload={"order_id": i},
         )
@@ -414,6 +451,7 @@ def _outcome_row():
     import uuid as _uuid
 
     return OrderOutbox.objects.create(
+        aggregate_type="order",
         event_type="orders.transition.succeeded.v1",
         routing_key="order.transition_succeeded",
         aggregate_id="42",

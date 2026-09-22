@@ -13,6 +13,7 @@ STAFF_GROUPS = [*StaffRole.values, LEGACY_GROUP]
 
 def emit_authz(user) -> None:
     OrderOutbox.objects.create(
+        aggregate_type=OrderOutbox.AggregateType.AUTHZ,
         aggregate_id=str(user.id),
         aggregate_version=user.authz_version,
         event_type=AUTHZ_EVENT,

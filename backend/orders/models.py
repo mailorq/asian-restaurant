@@ -19,7 +19,16 @@ class OrderOutbox(models.Model):
         # only an operator sets this; the relay retries a failed row forever
         FAILED = "failed", "Снято оператором"
 
+    # ids repeat across aggregates (order 5, customer 5), so an aggregate is the pair of type and id
+    class AggregateType(models.TextChoices):
+        ORDER = "order"
+        PRODUCT = "product"
+        CUSTOMER = "customer"
+        AUTHZ = "authz"
+        SNAPSHOT = "snapshot"
+
     event_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    aggregate_type = models.CharField(max_length=16, choices=AggregateType.choices)
     aggregate_id = models.CharField(max_length=64, db_index=True)
     aggregate_version = models.PositiveIntegerField(default=1)
     event_type = models.CharField(max_length=64, default="order.created")
@@ -44,10 +53,26 @@ class OrderOutbox(models.Model):
 
     class Meta:
         ordering = ["created_at"]
-        indexes = [models.Index(fields=["status", "next_attempt_at"])]
+        indexes = [
+            models.Index(fields=["status", "next_attempt_at"]),
+            # the relay asks for an earlier pending event of the same aggregate on every claim
+            models.Index(
+                fields=["aggregate_type", "aggregate_id", "id"],
+                condition=models.Q(status="pending"),
+                name="outbox_pending_aggregate_idx",
+            ),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(
+                    aggregate_type__in=["order", "product", "customer", "authz", "snapshot"]
+                ),
+                name="outbox_aggregate_type_known",
+            ),
+        ]
 
     def __str__(self) -> str:
-        return f"{self.event_type}:{self.aggregate_id} ({self.status})"
+        return f"{self.event_type}:{self.aggregate_type}:{self.aggregate_id} ({self.status})"
 
 
 class DeliveryAddress(models.Model):

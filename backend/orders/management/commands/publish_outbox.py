@@ -8,7 +8,7 @@ from datetime import timedelta
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 from event_contracts import (
     EVENT_ORDER_TRANSITION_REJECTED,
@@ -42,7 +42,6 @@ def _backoff_seconds(attempts: int) -> float:
 
 # events the storefront already emits in contract shape; their body carries the whole envelope, so nothing downstream has to rebuild it from headers
 ENVELOPE_EVENTS = frozenset({EVENT_ORDER_TRANSITION_SUCCEEDED, EVENT_ORDER_TRANSITION_REJECTED})
-AGGREGATE_TYPE = "order"
 PRODUCER = "storefront"
 
 
@@ -57,7 +56,7 @@ def _body(row: OrderOutbox) -> dict:
         "occurred_at": row.created_at.isoformat(),
         "producer": PRODUCER,
         "aggregate": {
-            "type": AGGREGATE_TYPE,
+            "type": row.aggregate_type,
             "id": row.aggregate_id,
             "version": row.aggregate_version,
         },
@@ -124,8 +123,9 @@ class Command(BaseCommand):
             if options["loop"]:
                 self.stdout.write(self.style.SUCCESS(f"outbox relay {worker_id} started"))
                 while True:
-                    self._drain(worker_id, gauge, stuck_gauge)
-                    time.sleep(options["interval"])
+                    # an aggregate publishes one event per claim, so a claim that found work is followed at once
+                    if not self._drain(worker_id, gauge, stuck_gauge):
+                        time.sleep(options["interval"])
             else:
                 self.stdout.write(
                     self.style.SUCCESS(
@@ -140,7 +140,6 @@ class Command(BaseCommand):
         try:
             channel = conn.channel()
             messaging.declare_topology(channel)
-            messaging.converge_legacy_binding(channel)
         finally:
             conn.close()
 
@@ -151,10 +150,19 @@ class Command(BaseCommand):
             & (Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now))
             & (Q(locked_until__isnull=True) | Q(locked_until__lt=now))
         )
+        # consumers apply an aggregate's events in version order, so only its oldest pending event may go:
+        # a later one waits out the earlier one's backoff and lease, whichever worker holds it
+        earlier = OrderOutbox.objects.filter(
+            status=OrderOutbox.Status.PENDING,
+            aggregate_type=OuterRef("aggregate_type"),
+            aggregate_id=OuterRef("aggregate_id"),
+            id__lt=OuterRef("id"),
+        )
         with transaction.atomic():
             rows = list(
                 OrderOutbox.objects.select_for_update(skip_locked=True)
                 .filter(eligible)
+                .exclude(Exists(earlier))
                 .order_by("created_at")[:BATCH]
             )
             if rows:
