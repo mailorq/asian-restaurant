@@ -75,7 +75,7 @@ def test_the_identity_survives_writes_and_clearing_and_is_new_after_expiry(make_
     version = _run(cart_service.clear, key, None)
     assert cart_service.read_sync(key).cart_id == identity
     _run(cart_service.add, key, product.id, 2, version)
-    cart_service.remove_purchased_sync(key, {product.id: 1})
+    cart_service.remove_purchased_sync(key, identity, {product.id: 1})
     assert cart_service.read_sync(key).cart_id == identity
     state = cart_service.read_sync(key)
     assert cart_service.clear_sync(key, state.version, state.cart_id) is True
@@ -132,3 +132,22 @@ def test_a_cart_stored_without_an_identity_gets_one_that_then_stays(make_product
     assert first.cart_id and first.cart_id == second.cart_id
     assert (first.items, first.version) == ({product.id: 1}, 4)
     _expire(key)
+
+
+def test_a_checkout_finishing_after_its_cart_expired_leaves_the_next_cart_alone(
+    user, make_product, monkeypatch
+):
+    product = make_product(price="100.00", stock=10)
+    key = cart_service.user_key(user.id)
+    _run(cart_service.add, key, product.id, 2, None)
+    geocode = order_service._geocode_safe
+
+    def cart_expires_and_is_rebuilt(raw_address):
+        _expire(key)
+        _run(cart_service.add, key, product.id, 2, None)
+        return geocode(raw_address)
+
+    monkeypatch.setattr(order_service, "_geocode_safe", cart_expires_and_is_rebuilt)
+    order_service.checkout(user, ADDRESS, "cash", "idem-expired-midway")
+
+    assert cart_service.read_sync(key).items == {product.id: 2}

@@ -372,18 +372,19 @@ def clear_sync(key: str, expected_version: int, expected_cart_id: str) -> bool:
     return bool(cleared)
 
 
-# Subtract exactly the purchased quantities instead of clearing the whole cart. an
-# all-or-nothing CAS clear leaves every purchased item in the cart when the version moved
-# during checkout (an item added mid-checkout), so the next checkout would sell them again
+# subtracts exactly the purchased quantities from the cart the order was built from: an item added
+# during checkout stays, and a cart rebuilt after that one expired is another cart and stays untouched
 # KEYS[1] = cart key
-# ARGV[1] = ttl seconds, ARGV[2] = identity for a cart that has none yet, ARGV[3..] = flattened (product id, purchased qty) pairs
+# ARGV[1] = ttl seconds, ARGV[2] = identity of the purchased cart, ARGV[3..] = flattened (product id, purchased qty) pairs
 # returns the resulting version (0 when the cart was dropped)
 _REMOVE_PURCHASED_LUA = """
 local key = KEYS[1]
 if redis.call('EXISTS', key) == 0 then
   return 0
 end
-redis.call('HSETNX', key, 'id', ARGV[2])
+if redis.call('HGET', key, 'id') ~= ARGV[2] then
+  return tonumber(redis.call('HGET', key, 'v')) or 0
+end
 local i = 3
 local changed = false
 while i < #ARGV do
@@ -410,10 +411,10 @@ return nv
 """
 
 
-def remove_purchased_sync(key: str, items: dict[int, int]) -> int:
+def remove_purchased_sync(key: str, cart_id: str, items: dict[int, int]) -> int:
     if not items:
         return 0
-    argv: list[int | str] = [CART_TTL, _new_id()]
+    argv: list[int | str] = [CART_TTL, cart_id]
     for product_id, quantity in items.items():
         argv += [product_id, quantity]
     try:

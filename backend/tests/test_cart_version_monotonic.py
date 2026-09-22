@@ -50,7 +50,7 @@ def test_checkout_emptying_the_cart_does_not_rewind_the_version(make_product):
     product = make_product(stock=10)
     version = _run(service.add, KEY, product.id, 2, None)
 
-    left = service.remove_purchased_sync(KEY, {product.id: 2})
+    left = service.remove_purchased_sync(KEY, service.read_sync(KEY).cart_id, {product.id: 2})
 
     assert left > version, "the cart is emptied on every checkout, so this rewind is routine"
 
@@ -58,7 +58,7 @@ def test_checkout_emptying_the_cart_does_not_rewind_the_version(make_product):
 def test_a_write_addressed_to_the_bought_cart_is_refused(make_product):
     product = make_product(stock=10)
     bought_at = _run(service.add, KEY, product.id, 2, None)
-    service.remove_purchased_sync(KEY, {product.id: 2})
+    service.remove_purchased_sync(KEY, service.read_sync(KEY).cart_id, {product.id: 2})
     _run(service.add, KEY, product.id, 1, None)
 
     with pytest.raises(service.CartConflict):

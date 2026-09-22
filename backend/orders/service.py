@@ -209,7 +209,7 @@ def checkout(user, raw_address: str, payment_method: str, idempotency_key: str, 
 
     # remove exactly what was bought: an item added mid-checkout stays, and the purchased
     # items never survive to be sold a second time by the next checkout
-    cart_service.remove_purchased_sync(key, cart_items)
+    cart_service.remove_purchased_sync(key, cart.cart_id, cart_items)
     return order
 
 
