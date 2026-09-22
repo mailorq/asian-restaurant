@@ -85,7 +85,7 @@ def test_deactivating_customer_emits_no_authz(user, superuser):
 def test_admin_cannot_grant_employee_role(user, superuser):
     ma = CustomUserAdmin(User, dj_admin.site)
     group, _ = Group.objects.get_or_create(name=StaffRole.MANAGER)
-    form = SimpleNamespace(instance=user, save_m2m=lambda: user.groups.add(group))  # form tries to add
+    form = SimpleNamespace(instance=user, save_edited_m2m=lambda: user.groups.add(group))  # form tries to add
     ma.save_related(_msg_request(superuser), form, [], change=True)
     user.refresh_from_db()
     assert not user.groups.filter(name=StaffRole.MANAGER).exists()
@@ -96,7 +96,7 @@ def test_admin_cannot_revoke_employee_role(user, superuser):
     group, _ = Group.objects.get_or_create(name=StaffRole.MANAGER)
     user.groups.add(group)
     ma = CustomUserAdmin(User, dj_admin.site)
-    form = SimpleNamespace(instance=user, save_m2m=lambda: user.groups.remove(group))  # form tries to remove
+    form = SimpleNamespace(instance=user, save_edited_m2m=lambda: user.groups.remove(group))  # form tries to remove
     ma.save_related(_msg_request(superuser), form, [], change=True)
     user.refresh_from_db()
     assert user.groups.filter(name=StaffRole.MANAGER).exists()
@@ -107,10 +107,10 @@ def test_admin_membership_has_no_shared_request_state(user, employee_user, super
     ma = CustomUserAdmin(User, dj_admin.site)
     group, _ = Group.objects.get_or_create(name=StaffRole.MANAGER)
     # employee_user is a member; a form tries to remove it -> must be restored
-    form_a = SimpleNamespace(instance=employee_user, save_m2m=lambda: employee_user.groups.remove(group))
+    form_a = SimpleNamespace(instance=employee_user, save_edited_m2m=lambda: employee_user.groups.remove(group))
     ma.save_related(_msg_request(superuser), form_a, [], change=True)
     # user is not a member; a form tries to add it -> must be reverted
-    form_b = SimpleNamespace(instance=user, save_m2m=lambda: user.groups.add(group))
+    form_b = SimpleNamespace(instance=user, save_edited_m2m=lambda: user.groups.add(group))
     ma.save_related(_msg_request(superuser), form_b, [], change=True)
     employee_user.refresh_from_db()
     user.refresh_from_db()

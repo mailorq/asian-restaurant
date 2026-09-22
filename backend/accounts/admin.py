@@ -7,13 +7,45 @@ from django.contrib.auth.models import Group
 from accounts import service as accounts_service
 from accounts.models import User
 from accounts.phone import to_e164
-from accounts.roles import LEGACY_GROUP, StaffRole
+from accounts.roles import LEGACY_GROUP, NotAuthorized, StaffRole
+from common.forms import RenderedValuesForm
+from employee import service as employee_service
 
 _PROFILE_FIELDS = {"first_name", "phone"}
+_ACCESS_FIELDS = {"is_active", "is_superuser"}
+_ROW_FIELDS = frozenset(f.name for f in User._meta.concrete_fields)
 _STAFF_GROUPS = [*StaffRole.values, LEGACY_GROUP]
 
 
-class CustomerChangeForm(UserChangeForm):
+class CustomerChangeForm(RenderedValuesForm, UserChangeForm):
+    # the authorization version the form was rendered at: access is changed only against it, so a
+    # revocation or grant made while the form was open is reported, not undone
+    expected_authz_version = forms.IntegerField(widget=forms.HiddenInput, required=False)
+    actor = None
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk and not self.is_bound:
+            self.fields["expected_authz_version"].initial = self.instance.authz_version
+
+    def clean(self):
+        cleaned = super().clean()
+        if self.instance.pk and _ACCESS_FIELDS.intersection(self.changed_data):
+            # the same rows in the same order as the access services take them, and the admin view runs in one
+            # transaction, so the check holds until save_model has applied the change
+            try:
+                locked = employee_service.lock_privileged(self.actor, self.instance.pk)
+            except NotAuthorized as exc:
+                raise forms.ValidationError(
+                    "Доступ пользователя меняет только активный суперпользователь"
+                ) from exc
+            if locked[self.instance.pk].authz_version != cleaned.get("expected_authz_version"):
+                raise forms.ValidationError(
+                    "Пользователь изменился, пока форма была открыта: права или роль уже другие. "
+                    "Обновите страницу и внесите правку заново."
+                )
+        return cleaned
+
     def clean_phone(self):
         raw = self.cleaned_data.get("phone")
         if not raw:
@@ -38,42 +70,53 @@ class CustomUserAdmin(UserAdmin):
     search_fields = ("username", "phone", "email")
     readonly_fields = ("customer_version", "authz_version")
 
+    def get_readonly_fields(self, request, obj=None):
+        fields = super().get_readonly_fields(request, obj)
+        # an account whose login is its number moves the login only together with the phone
+        if obj is not None and obj.username == obj.phone:
+            return (*fields, "username")
+        return fields
+
     def formfield_for_manytomany(self, db_field, request, **kwargs):
         # staff roles are not editable here; they change only through set_staff_role
         if db_field.name == "groups":
             kwargs["queryset"] = Group.objects.exclude(name__in=_STAFF_GROUPS)
         return super().formfield_for_manytomany(db_field, request, **kwargs)
 
+    def get_form(self, request, obj=None, **kwargs):
+        form = super().get_form(request, obj, **kwargs)
+        form.actor = request.user
+        return form
+
     def save_model(self, request, obj, form, change):
-        # name/phone, is_active and is_superuser are authorization/projection source state:
-        # route each change through its service so a version bump + outbox event happen
-        # atomically. is_superuser grants operations access, so it must revoke like a role
-        changed = set(form.changed_data)
-        db = User.objects.get(pk=obj.pk) if change else None
-        route_profile = bool(db and (_PROFILE_FIELDS & changed))
-        route_active = bool(db and "is_active" in changed)
-        route_superuser = bool(db and "is_superuser" in changed)
-        new_name, new_phone = obj.first_name, obj.phone
-        new_active, new_superuser = obj.is_active, obj.is_superuser
-        if route_profile:
-            obj.first_name, obj.phone = db.first_name, db.phone
-        if route_active:
-            obj.is_active = db.is_active
-        if route_superuser:
-            obj.is_superuser = db.is_superuser
-        super().save_model(request, obj, form, change)
-        if route_profile:
-            accounts_service.set_customer_profile(obj.pk, name=new_name, phone=new_phone)
-        if route_active or route_superuser:
-            from employee import service as employee_service
-            if route_superuser:
-                employee_service.set_superuser(actor=request.user, target=obj, is_superuser=new_superuser)
-            if route_active:
-                employee_service.set_active(actor=request.user, target=obj, active=new_active)
-        if route_profile or route_active or route_superuser:
-            obj.refresh_from_db()
         if not change:
+            super().save_model(request, obj, form, change)
             accounts_service.emit_state(obj)
+            return
+        # obj may be older than the row, so only what the admin edited leaves it. profile and access go
+        # through their services, which version the change and emit it
+        edited = set(form.changed_data)
+        user = User.objects.select_for_update().get(pk=obj.pk)
+        plain = edited & (_ROW_FIELDS - _PROFILE_FIELDS - _ACCESS_FIELDS)
+        if user.username == user.phone:
+            plain.discard("username")
+        if plain:
+            for name in plain:
+                setattr(user, name, getattr(obj, name))
+            user.save(update_fields=sorted(plain))
+        if _PROFILE_FIELDS & edited:
+            accounts_service.set_customer_profile(
+                obj.pk,
+                name=obj.first_name if "first_name" in edited else None,
+                phone=obj.phone if "phone" in edited else None,
+            )
+        if "is_superuser" in edited:
+            employee_service.set_superuser(
+                actor=request.user, target=user, is_superuser=obj.is_superuser
+            )
+        if "is_active" in edited:
+            employee_service.set_active(actor=request.user, target=user, active=obj.is_active)
+        obj.refresh_from_db()
 
     def save_related(self, request, form, formsets, change):
         # staff membership only changes via set_staff_role; read the pre-save membership from
@@ -85,7 +128,12 @@ class CustomUserAdmin(UserAdmin):
                 User.objects.get(pk=user.pk).groups.filter(name__in=_STAFF_GROUPS)
                 .values_list("name", flat=True)
             )
-        super().save_related(request, form, formsets, change)
+        if change:
+            form.save_edited_m2m()
+        else:
+            form.save_m2m()
+        for formset in formsets:
+            self.save_formset(request, form, formset, change=change)
         after = set(user.groups.filter(name__in=_STAFF_GROUPS).values_list("name", flat=True))
         if after != before:
             user.groups.remove(*Group.objects.filter(name__in=after - before))

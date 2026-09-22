@@ -25,7 +25,7 @@ def emit_authz(user) -> None:
     )
 
 
-def _lock_privileged(actor, target_pk):
+def lock_privileged(actor, target_pk):
     """
     locks every row a privileged change may touch, in one query, by ascending pk
 
@@ -54,7 +54,7 @@ def _other_active_superusers(locked, exclude_pk) -> list:
 
 @transaction.atomic
 def set_superuser(actor, target, is_superuser: bool):
-    locked = _lock_privileged(actor, target.pk)
+    locked = lock_privileged(actor, target.pk)
     user = locked[target.pk]
     if is_superuser:
         user.groups.remove(*Group.objects.filter(name__in=STAFF_GROUPS))
@@ -78,7 +78,7 @@ def set_superuser(actor, target, is_superuser: bool):
 def set_active(actor, target, active: bool):
     # is_active is authorization state: deactivating an operations-capable user must revoke
     # their access, so bump the version and emit — customers carry no operations access
-    locked = _lock_privileged(actor, target.pk)
+    locked = lock_privileged(actor, target.pk)
     user = locked[target.pk]
     if user.is_active == active:
         return user
