@@ -152,14 +152,15 @@ def test_redis_down_returns_503(api, monkeypatch):
 def test_clear_sync_is_version_scoped(make_product):
     key = service.user_key(1)
     service._sync_redis().hset(key, mapping={"5": 2, service.VERSION_FIELD: 3})
+    cart_id = service.read_sync(key).cart_id
 
-    assert service.clear_sync(key, 2) is False  # stale version -> not cleared
+    assert service.clear_sync(key, 2, cart_id) is False  # stale version -> not cleared
     assert service._sync_redis().exists(key) == 1
 
-    assert service.clear_sync(key, 3) is True  # matching version -> cleared
-    items, version = service.read_sync(key)
-    assert items == {}
-    assert version > 3  # the counter outlives the items it guarded
+    assert service.clear_sync(key, 3, cart_id) is True  # matching version -> cleared
+    state = service.read_sync(key)
+    assert state.items == {}
+    assert state.version > 3  # the counter outlives the items it guarded
 
 
 def test_merge_sums_quantities_and_render_caps_to_stock(make_product):
@@ -199,15 +200,17 @@ def test_authenticated_write_requires_csrf(make_product, user):
     assert resp.status_code == 403
 
 
-def test_guest_write_skips_csrf(make_product):
+def test_guest_write_carries_the_csrf_token_like_any_other(make_product):
     product = make_product(stock=10)
     csrf_client = Client(enforce_csrf_checks=True)
     service._clients.clear()
+    csrf_client.get("/api/auth/csrf")
 
     resp = csrf_client.post(
         "/api/cart/items",
         data=json.dumps({"product_id": product.id, "quantity": 1}),
         content_type="application/json",
+        headers={"X-CSRFToken": csrf_client.cookies["csrftoken"].value},
     )
     assert resp.status_code == 200
 

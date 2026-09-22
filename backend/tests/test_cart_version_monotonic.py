@@ -69,7 +69,7 @@ def test_the_version_survives_a_version_scoped_clear(make_product):
     product = make_product(stock=10)
     version = _run(service.add, KEY, product.id, 1, None)
 
-    assert service.clear_sync(KEY, version) is True
+    assert service.clear_sync(KEY, version, service.read_sync(KEY).cart_id) is True
 
     _, current = _run(service.read, KEY)
     assert current > version

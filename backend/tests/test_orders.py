@@ -76,11 +76,11 @@ def test_checkout_removes_only_purchased_items_when_cart_changed_midway(
     real_read = cart_service.read_sync
 
     seed_cart(user.id, {bought.id: 2, added.id: 1}, version=2)
-    monkeypatch.setattr(cart_service, "read_sync", lambda k: ({bought.id: 2}, 1))
+    monkeypatch.setattr(cart_service, "read_sync", lambda k: cart_service.CartState({bought.id: 2}, 1, real_read(k).cart_id))
 
     order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-mid-01")
 
-    items, _version = real_read(key)
+    items = real_read(key).items
     assert bought.id not in items  # purchased items never survive to be sold again
     assert items == {added.id: 1}  # the concurrent addition is preserved
 
@@ -112,7 +112,7 @@ def test_retry_does_not_wipe_a_rebuilt_cart_at_the_same_version(user, make_produ
 
     order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-rebuild-1")
 
-    items, _v = cart_service.read_sync(key)
+    items = cart_service.read_sync(key).items
     assert items == {other.id: 1}
 
 
