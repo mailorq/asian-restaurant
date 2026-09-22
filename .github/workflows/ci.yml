@@ -84,9 +84,18 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      rabbitmq:
+        # the bridge's retry guarantee is a broker behaviour, so it is asserted against a real one; the test waits for the port itself
+        image: rabbitmq:4.3-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: ci
+          RABBITMQ_DEFAULT_PASS: ci
+        ports: ["5672:5672"]
     env:
       OPERATIONS_SECRET_KEY: ci-ops-key
       OPERATIONS_DATABASE_URL: postgres://ops_user:ops_pass@localhost:5432/operations
+      BRIDGE_MQ_URL_FOR_TRANSPORT: amqp://ci:ci@localhost:5672/
+      REQUIRE_BRIDGE_TRANSPORT_TESTS: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

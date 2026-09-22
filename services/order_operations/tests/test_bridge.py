@@ -440,3 +440,49 @@ def test_a_legacy_body_without_origin_time_is_still_refused():
 
     ch.basic_nack.assert_called_once_with(method.delivery_tag, requeue=False)
     cmd.publish_channel.basic_publish.assert_not_called()
+
+
+def test_a_retry_the_broker_cannot_route_is_dead_lettered_not_acknowledged():
+    from pika.exceptions import UnroutableError
+
+    cmd = _cmd(publish_side_effect=Exception("broker down"))
+    ch = MagicMock()
+    ch.basic_publish.side_effect = UnroutableError([])
+    props, method, body = _legacy()
+
+    cmd._on_message(ch, method, props, body)
+
+    ch.basic_ack.assert_not_called()
+    ch.basic_nack.assert_called_once_with(method.delivery_tag, requeue=False)
+
+
+def test_a_retry_the_broker_refused_to_store_puts_the_original_back():
+    from pika.exceptions import NackError
+
+    cmd = _cmd(publish_side_effect=Exception("broker down"))
+    ch = MagicMock()
+    ch.basic_publish.side_effect = NackError([])
+    props, method, body = _legacy()
+
+    cmd._on_message(ch, method, props, body)
+
+    ch.basic_ack.assert_not_called()
+    ch.basic_nack.assert_called_once_with(method.delivery_tag, requeue=True)
+
+
+def test_the_consume_channel_confirms_publishes_before_it_consumes(monkeypatch):
+    import pika as pika_module
+
+    connection = MagicMock()
+    channel = connection.channel.return_value
+    channel.start_consuming.side_effect = KeyboardInterrupt
+    monkeypatch.setattr(pika_module, "BlockingConnection", lambda params: connection)
+    cmd = Command()
+    monkeypatch.setattr(cmd, "_open_publish", lambda: None)
+    monkeypatch.setattr(cmd, "_drop_publish", lambda: None)
+
+    cmd.handle()
+
+    calls = [c[0] for c in channel.method_calls]
+    assert "confirm_delivery" in calls
+    assert calls.index("confirm_delivery") < calls.index("basic_consume")

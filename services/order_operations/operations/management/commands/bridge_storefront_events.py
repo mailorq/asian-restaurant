@@ -16,6 +16,7 @@ from event_contracts import (
     EVENT_STOCK_CHANGED,
     parse_event,
 )
+from pika.exceptions import UnroutableError
 
 from operations import messaging
 from operations.jsonlog import describe_error, log_context
@@ -231,6 +232,8 @@ class Command(BaseCommand):
         consume_conn = pika.BlockingConnection(pika.URLParameters(settings.BRIDGE_CONSUME_URL))
         channel = consume_conn.channel()
         declare_bridge_topology(channel)
+        # the retry copy is published on this channel and the original acked right after it, so only a confirmed copy may release the original
+        channel.confirm_delivery()
         self._open_publish()
         channel.basic_qos(prefetch_count=20)
         for queue in CONSUMED_QUEUES:
@@ -346,6 +349,11 @@ class Command(BaseCommand):
                 ),
                 mandatory=True,
             )
+        except UnroutableError:
+            # no retry queue behind the exchange is a topology fault that no redelivery fixes
+            log.warning("bridge retry unroutable -> DLQ")
+            channel.basic_nack(method.delivery_tag, requeue=False)
+            return
         except Exception:
             log.exception("bridge retry publish failed; requeueing original")
             channel.basic_nack(method.delivery_tag, requeue=True)
