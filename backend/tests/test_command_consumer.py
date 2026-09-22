@@ -203,3 +203,60 @@ def test_expired_command_is_rejected_not_applied(consumer, order, employee_user)
     row = OrderOutbox.objects.get(event_type="orders.transition.rejected.v1")
     assert row.payload["reject_code"] == "command_expired"
     assert Order.objects.get(pk=order.pk).status == "created"
+
+
+def _foreign(event_type, aggregate, data):
+    return json.dumps(
+        {
+            "event_id": str(uuid.uuid4()),
+            "event_type": event_type,
+            "schema_version": 1,
+            "occurred_at": dt.datetime.now(dt.UTC).isoformat(),
+            "producer": "storefront",
+            "aggregate": aggregate,
+            "correlation_id": str(uuid.uuid4()),
+            "data": data,
+        }
+    ).encode()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _foreign(
+            "orders.order.created.v1",
+            {"type": "order", "id": "7", "version": 1},
+            {
+                "order_id": 7,
+                "customer_id": 3,
+                "status": "created",
+                "total": "200.00",
+                "payment_method": "cash",
+                "items": [
+                    {
+                        "source_product_id": 1,
+                        "product_code": "dish_1",
+                        "name": "Рамен",
+                        "quantity": 2,
+                        "unit_price": "100.00",
+                        "line_total": "200.00",
+                    }
+                ],
+            },
+        ),
+        _foreign(
+            "identity.customer_changed.v1",
+            {"type": "customer", "id": "3", "version": 1},
+            {"customer_id": 3},
+        ),
+    ],
+    ids=["order created", "customer changed"],
+)
+def test_a_valid_event_of_another_type_is_dead_lettered_and_the_consumer_keeps_running(body):
+    channel = FakeChannel()
+
+    ConsumerCommand()._on_message(channel, _method(), _properties(), body)
+
+    assert channel.nacked == [(1, False)]
+    assert channel.acked == []
+    assert not CommandInbox.objects.exists()

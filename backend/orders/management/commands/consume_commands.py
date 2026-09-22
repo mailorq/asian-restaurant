@@ -12,7 +12,12 @@ import os
 import pika
 from django.core.management.base import BaseCommand
 from django.db import DatabaseError, InterfaceError, OperationalError, connections
-from event_contracts import EVENT_ORDER_TRANSITION_REQUESTED, UnknownEventType, parse_event
+from event_contracts import (
+    EVENT_ORDER_TRANSITION_REQUESTED,
+    OrderTransitionRequestedData,
+    UnknownEventType,
+    parse_event,
+)
 from pydantic import ValidationError
 
 from config.jsonlog import describe_error, log_context
@@ -84,21 +89,25 @@ class Command(BaseCommand):
             log.warning("command poison message -> DLQ", extra={"message_id": getattr(properties, "message_id", None), "routing_key": method.routing_key, "error_shape": describe_error(exc)})
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
+        # the queue binds one routing key but the broker does not look inside a body: a valid event of any other
+        # contract type can arrive here, and most of them carry no command id
+        command_id = getattr(data, "command_id", None)
         with log_context(
             event_id=str(envelope.event_id),
             correlation_id=str(envelope.correlation_id),
             causation_id=str(envelope.causation_id) if envelope.causation_id else None,
             event_type=envelope.event_type,
-            command_id=str(data.command_id),
+            command_id=str(command_id) if command_id else None,
         ):
+            if envelope.event_type != EVENT_ORDER_TRANSITION_REQUESTED or not isinstance(
+                data, OrderTransitionRequestedData
+            ):
+                log.warning("unexpected event on the command queue -> DLQ")
+                channel.basic_nack(method.delivery_tag, requeue=False)
+                return
             self._apply(channel, method, properties, body, envelope, data, retries)
 
     def _apply(self, channel, method, properties, body, envelope, data, retries: int) -> None:
-        if envelope.event_type != EVENT_ORDER_TRANSITION_REQUESTED:
-            # the queue binds one routing key, so anything else here is a topology mistake
-            log.warning("unexpected event on the command queue -> DLQ")
-            channel.basic_nack(method.delivery_tag, requeue=False)
-            return
         try:
             outcome = apply_transition_command(
                 data, request_event_id=envelope.event_id, correlation_id=envelope.correlation_id
