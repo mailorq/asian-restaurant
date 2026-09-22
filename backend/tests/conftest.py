@@ -67,13 +67,14 @@ def api(client):
             self._reset()
             return client.get(*a, **k)
 
+        # the spa sends every write as json, and the api refuses any other body
         def post(self, *a, **k):
             self._reset()
-            return client.post(*a, **k)
+            return client.post(*a, **{"content_type": "application/json", **k})
 
         def put(self, *a, **k):
             self._reset()
-            return client.put(*a, **k)
+            return client.put(*a, **{"content_type": "application/json", **k})
 
         def delete(self, *a, **k):
             self._reset()
@@ -138,6 +139,17 @@ def superuser(db):
     return get_user_model().objects.create_superuser(
         username="+79990000011", password="Pass!2345"
     )
+
+
+@pytest.fixture
+def admin_client(client, superuser, settings):
+    # admin pages reference static files, and tests run without a collected manifest
+    settings.STORAGES = {
+        **settings.STORAGES,
+        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+    }
+    client.force_login(superuser)
+    return client
 
 
 @pytest.fixture

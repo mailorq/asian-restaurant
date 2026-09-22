@@ -78,7 +78,7 @@ def test_invalid_transition_returns_400(client, employee_user, sample_order):
 def test_inventory_adjust_records_stock_adjustment(client, employee_user, make_product):
     product = make_product(stock=5)
     client.force_login(employee_user)
-    resp = _post(client, f"/api/employee/inventory/{product.id}/adjust", {"new_quantity": 12, "reason": "поставка"})
+    resp = _post(client, f"/api/employee/inventory/{product.id}/adjust", {"new_quantity": 12, "reason": "поставка", "expected_version": product.version})
     assert resp.status_code == 200
     assert resp.json()["stock_quantity"] == 12
     product.refresh_from_db()

@@ -22,11 +22,20 @@ class InventoryItemOut(Schema):
     category: str
     stock_quantity: int
     is_active: bool
+    version: int
 
 
 class AdjustIn(Schema):
     new_quantity: int = Field(ge=0)
     reason: str = Field(min_length=2, max_length=255)
+    # the version the employee saw: a sale or another adjustment since then refuses the write
+    expected_version: int = Field(ge=1)
+
+
+class InventoryConflictOut(Schema):
+    code: str
+    detail: str
+    product: InventoryItemOut
 
 
 class StockAdjustmentOut(Schema):

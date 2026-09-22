@@ -1,6 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.db.models import Count, Q
-from ninja import Router
+from ninja import Router, Status
 from ninja.errors import HttpError
 from ninja.security import django_auth
 
@@ -16,6 +16,7 @@ from employee.schemas import (
     ORDERS_PREVIEW,
     AdjustIn,
     EmployeeUserOut,
+    InventoryConflictOut,
     InventoryItemOut,
     OrderScope,
     OrderSort,
@@ -86,13 +87,30 @@ def inventory(request, search: str | None = None):
     return qs
 
 
-@router.post("/inventory/{product_id}/adjust", response=InventoryItemOut)
+@router.post("/inventory/{product_id}/adjust", response={200: InventoryItemOut, 409: InventoryConflictOut})
 @inventory_required
 def adjust_stock(request, product_id: int, data: AdjustIn):
-    product = inventory_service.set_stock(product_id, data.new_quantity, reason=data.reason, staff=request.auth)
+    try:
+        product = inventory_service.set_stock(
+            product_id,
+            data.new_quantity,
+            reason=data.reason,
+            staff=request.auth,
+            expected_version=data.expected_version,
+        )
+    except inventory_service.StaleProduct as exc:
+        current = exc.product
+        return Status(
+            409,
+            {
+                "code": "stock_version_conflict",
+                "detail": f"Остаток уже изменился: сейчас {current.stock_quantity} шт. Проверьте и сохраните снова",
+                "product": current,
+            },
+        )
     if product is None:
         raise HttpError(404, "Товар не найден")
-    return product
+    return Status(200, product)
 
 
 @router.get("/inventory/{product_id}/adjustments", response=list[StockAdjustmentOut])
@@ -105,8 +123,6 @@ def stock_adjustments(request, product_id: int):
 @router.get("/users", response=PagedUsers)
 @customers_required
 def list_users(request, search: str | None = None, page: int = 1, page_size: int = 20):
-    page = max(1, page)
-    page_size = min(max(1, page_size), 100)
     qs = (
         get_user_model()
         .objects.prefetch_related("groups")
@@ -119,9 +135,7 @@ def list_users(request, search: str | None = None, page: int = 1, page_size: int
         qs = qs.filter(
             Q(username__icontains=search) | Q(first_name__icontains=search) | Q(phone__icontains=search)
         )
-    total = qs.count()
-    start = (page - 1) * page_size
-    return {"items": list(qs[start : start + page_size]), "total": total, "page": page, "page_size": page_size}
+    return paginate(qs, page, page_size)
 
 
 @router.get("/users/{user_id}", response=UserDetailOut)

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { api } from "./client";
+import { ApiError, api } from "./client";
 import type { Order, OrderStatus, PagedOrders } from "./orders";
 import type { Category } from "../lib/menu";
 
@@ -11,6 +11,7 @@ export interface InventoryItem {
   category: Category;
   stock_quantity: number;
   is_active: boolean;
+  version: number;
 }
 
 export interface StockAdjustmentRow {
@@ -115,12 +116,20 @@ export function useInventory(search: string) {
 export function useAdjustStock() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { productId: number; new_quantity: number; reason: string }) =>
+    mutationFn: (vars: { productId: number; new_quantity: number; reason: string; expected_version: number }) =>
       api<InventoryItem>(`/employee/inventory/${vars.productId}/adjust`, {
         method: "POST",
-        body: JSON.stringify({ new_quantity: vars.new_quantity, reason: vars.reason }),
+        body: JSON.stringify({
+          new_quantity: vars.new_quantity,
+          reason: vars.reason,
+          expected_version: vars.expected_version,
+        }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["employee", "inventory"] }),
+    // a 409 means the stock moved since the list was loaded: reload it so the next save carries the new version
+    onError: (e) => {
+      if (e instanceof ApiError && e.status === 409) qc.invalidateQueries({ queryKey: ["employee", "inventory"] });
+    },
   });
 }
 

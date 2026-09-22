@@ -17,7 +17,7 @@ function InventoryRow({ item }: { item: InventoryItem }) {
       return;
     }
     adjust.mutate(
-      { productId: item.id, new_quantity: qty, reason: reason.trim() },
+      { productId: item.id, new_quantity: qty, reason: reason.trim(), expected_version: item.version },
       {
         onSuccess: () => {
           notify(`${item.name}: остаток ${qty}`);

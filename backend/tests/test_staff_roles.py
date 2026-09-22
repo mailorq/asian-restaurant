@@ -60,7 +60,7 @@ def test_an_operator_cannot_adjust_stock(api, operator, make_product):
     api.force_login(operator)
 
     response = api.post(f"/api/employee/inventory/{product.id}/adjust",
-                        data=json.dumps({"new_quantity": 99, "reason": "проверка прав"}),
+                        data=json.dumps({"new_quantity": 99, "reason": "проверка прав", "expected_version": product.version}),
                         content_type="application/json")
 
     assert response.status_code == 403

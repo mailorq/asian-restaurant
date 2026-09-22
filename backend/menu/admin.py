@@ -1,11 +1,60 @@
+from django import forms
 from django.contrib import admin
 
 from menu import inventory
 from menu.models import Ingredient, Product, StockAdjustment
 
+_ROW_FIELDS = frozenset(f.name for f in Product._meta.concrete_fields)
+
+
+class ProductAdminForm(forms.ModelForm):
+    # the version the form was rendered at. name and stock carry their rendered value along, so the form
+    # knows what the admin changed, and a sale or edit made while it was open is reported, not overwritten
+    expected_version = forms.IntegerField(widget=forms.HiddenInput, required=False)
+
+    class Meta:
+        model = Product
+        fields = (
+            "code",
+            "category",
+            "name",
+            "description",
+            "allergens",
+            "price",
+            "image",
+            "ingredients",
+            "stock_quantity",
+            "is_active",
+            "is_featured",
+        )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk and not self.is_bound:
+            self.fields["expected_version"].initial = self.instance.version
+        for name in inventory.PROJECTED_FIELDS & set(self.fields):
+            self.fields[name].show_hidden_initial = True
+
+    def clean(self):
+        cleaned = super().clean()
+        if self.instance.pk and inventory.PROJECTED_FIELDS.intersection(self.changed_data):
+            # the admin view runs in one transaction, so this lock is held until save_model has written
+            current = (
+                Product.objects.select_for_update()
+                .filter(pk=self.instance.pk)
+                .values_list("version", flat=True)
+            )
+            if cleaned.get("expected_version") != current.first():
+                raise forms.ValidationError(
+                    "Товар изменился, пока форма была открыта: остаток или название уже другие. "
+                    "Обновите страницу и внесите правку заново."
+                )
+        return cleaned
+
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
+    form = ProductAdminForm
     list_display = ("code", "name", "category", "price", "stock_quantity", "is_active", "is_featured")
     list_filter = ("category", "is_active", "is_featured")
     list_editable = ("price", "is_active", "is_featured")
@@ -14,22 +63,22 @@ class ProductAdmin(admin.ModelAdmin):
     readonly_fields = ("version",)
 
     def save_model(self, request, obj, form, change):
-        # name/stock are projected by operations: route edits through the single writer so
-        # a version bump + event happen atomically instead of a silent direct write
-        routed = {"name", "stock_quantity"} & set(form.changed_data)
-        if change and routed:
-            db = Product.objects.get(pk=obj.pk)
-            new_name = obj.name if "name" in routed else None
-            new_stock = obj.stock_quantity if "stock_quantity" in routed else None
-            obj.name, obj.stock_quantity = db.name, db.stock_quantity
-            super().save_model(request, obj, form, change)
-            inventory.set_product_state(obj.pk, name=new_name, stock=new_stock, reason="admin edit", staff=request.user)
-            obj.refresh_from_db()
-            return
-        super().save_model(request, obj, form, change)
         if not change:
+            super().save_model(request, obj, form, change)
             # a new product must reach operations as a live event, not only via bootstrap
             inventory.emit_state(obj)
+            return
+        # obj may be older than the row, so only what the admin edited leaves it
+        changes = {name: getattr(obj, name) for name in form.changed_data if name in _ROW_FIELDS}
+        expected = (
+            form.cleaned_data.get("expected_version")
+            if inventory.PROJECTED_FIELDS & set(changes)
+            else None
+        )
+        inventory.update_product(
+            obj.pk, changes, expected_version=expected, reason="admin edit", staff=request.user
+        )
+        obj.refresh_from_db()
 
     def has_delete_permission(self, request, obj=None):
         # hard delete would leave an obsolete projection with no deletion event; deactivate instead
