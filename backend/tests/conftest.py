@@ -34,8 +34,7 @@ def _static_root(tmp_path_factory):
 
 @pytest.fixture(autouse=True)
 def static_root(settings, _static_root):
-    # whitenoise indexes STATIC_ROOT whenever a test client builds the middleware, and only the image runs
-    # collectstatic, so tests get an existing empty root instead of the missing one in the checkout
+    # whitenoise indexes the static root whenever a test client builds the middleware, and only the image runs collectstatic, so tests get an existing empty root
     settings.STATIC_ROOT = _static_root
 
 
