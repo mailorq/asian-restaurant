@@ -1,6 +1,6 @@
 import json
+import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -11,9 +11,11 @@ from django.utils import timezone
 from ops import service
 from ops.management.commands.run_ops_consumer import Command as OpsConsumer
 from orders import messaging
+from orders.management.commands import publish_outbox
 from orders.management.commands.publish_outbox import Command as Relay
 from orders.management.commands.publish_outbox import _backoff_seconds
 from orders.models import OrderOutbox
+from tests.concurrency import Writer, queue_behind
 
 pytestmark = pytest.mark.django_db
 
@@ -191,27 +193,35 @@ def test_publish_not_committed_when_lease_expired(monkeypatch):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_parallel_workers_do_not_double_claim():
-    for _ in range(20):
-        _outbox()
+def test_parallel_workers_do_not_double_claim(monkeypatch):
+    rows = {_outbox(aggregate_id=str(n)).pk for n in range(publish_outbox.BATCH + 10)}
     relay = Relay()
+    holding, release, claimed = threading.Event(), threading.Event(), {}
+    real = publish_outbox.uuid.uuid4
 
-    def worker(worker_id):
-        from django.db import connection
+    def first_holds_its_rows():
+        if threading.current_thread().name == "w1":
+            holding.set()
+            assert release.wait(timeout=20)
+        return real()
 
-        try:
-            return [row.pk for row in relay._claim(worker_id)]
-        finally:
-            connection.close()
+    monkeypatch.setattr(publish_outbox, "uuid", SimpleNamespace(uuid4=first_holds_its_rows))
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        a = pool.submit(worker, "w1")
-        b = pool.submit(worker, "w2")
-        ids_a, ids_b = a.result(), b.result()
+    def claim(worker_id):
+        def run():
+            claimed[worker_id] = {row.pk for row in relay._claim(worker_id)}
 
-    assert set(ids_a).isdisjoint(ids_b)  # skip_locked -> no row claimed twice
-    assert len(ids_a) + len(ids_b) <= 20
-    OrderOutbox.objects.all().delete()  # transaction=True: clean up explicitly
+        return run
+
+    w1, w2 = Writer("w1", claim("w1")), Writer("w2", claim("w2"))
+    met = queue_behind(w1, w2, holding, release)
+
+    assert (w1.error, w2.error) == (None, None)
+    assert len(claimed["w1"]) == publish_outbox.BATCH
+    assert claimed["w1"].isdisjoint(claimed["w2"])
+    assert claimed["w1"] | claimed["w2"] == rows
+    assert met == "finished"
+    assert ("orders_orderoutbox", "RowShareLock") in w1.locks
 
 
 def test_the_relay_declares_its_exchange_and_no_queue():

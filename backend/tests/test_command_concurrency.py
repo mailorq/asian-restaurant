@@ -5,7 +5,6 @@ import uuid
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
-from django.db import connection
 from event_contracts import OrderTransitionRequestedData
 
 from accounts.roles import StaffRole
@@ -14,6 +13,7 @@ from menu.models import Product
 from orders import commands
 from orders import service as order_service
 from orders.models import CommandInbox, OrderOutbox, OrderStatusHistory
+from tests.concurrency import Writer, queue_behind
 
 
 def _actor():
@@ -40,7 +40,7 @@ def _order(actor):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_two_deliveries_of_one_command_apply_it_once():
+def test_two_deliveries_of_one_command_apply_it_once(monkeypatch):
     actor = _actor()
     order = _order(actor)
     data = OrderTransitionRequestedData(
@@ -49,36 +49,36 @@ def test_two_deliveries_of_one_command_apply_it_once():
         order_id=order.id, expected_status="created", target_status="confirmed",
     )
     request_event_id, correlation_id = uuid.uuid4(), uuid.uuid4()
+    holding, release, results = threading.Event(), threading.Event(), {}
+    real = commands._actor
 
-    results, errors = [], []
-    start = threading.Barrier(2)
+    def first_holds_its_claim(requested):
+        found = real(requested)
+        if threading.current_thread().name == "first":
+            holding.set()
+            assert release.wait(timeout=20)
+        return found
 
-    def deliver():
-        try:
-            start.wait(timeout=15)
-            results.append(
-                commands.apply_transition_command(
-                    data, request_event_id=request_event_id, correlation_id=correlation_id
-                )
+    monkeypatch.setattr(commands, "_actor", first_holds_its_claim)
+
+    def deliver(name):
+        def run():
+            results[name] = commands.apply_transition_command(
+                data, request_event_id=request_event_id, correlation_id=correlation_id
             )
-        except Exception as exc:
-            errors.append(exc)
-        finally:
-            connection.close()
 
-    threads = [threading.Thread(target=deliver) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=40)
+        return run
 
-    assert not errors, errors
-    assert len(results) == 2
-    assert sorted(r.replayed for r in results) == [False, True]
-    assert [r.data for r in results][0] == [r.data for r in results][1]
+    first, second = Writer("first", deliver("first")), Writer("second", deliver("second"))
+    met = queue_behind(first, second, holding, release)
 
+    assert (first.error, second.error) == (None, None)
+    assert (results["first"].replayed, results["second"].replayed) == (False, True)
+    assert results["first"].data == results["second"].data
     order.refresh_from_db()
     assert order.status == "confirmed"
     assert CommandInbox.objects.filter(command_id=data.command_id).count() == 1
     assert OrderOutbox.objects.filter(event_type="orders.transition.succeeded.v1").count() == 1
     assert OrderStatusHistory.objects.filter(order=order, to_status="confirmed").count() == 1
+    assert met == "blocked"
+    assert second.blocked_in.lower().startswith('insert into "orders_commandinbox"')
