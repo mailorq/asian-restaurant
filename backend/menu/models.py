@@ -38,8 +38,10 @@ class Product(models.Model):
         ordering = ["category", "name"]
         indexes = [models.Index(fields=["category", "is_active"])]
         constraints = [
-            models.CheckConstraint(check=models.Q(price__gte=0), name="product_price_gte_0"),
-            models.CheckConstraint(check=models.Q(stock_quantity__gte=0), name="product_stock_gte_0"),
+            models.CheckConstraint(condition=models.Q(price__gte=0), name="product_price_gte_0"),
+            models.CheckConstraint(
+                condition=models.Q(stock_quantity__gte=0), name="product_stock_gte_0"
+            ),
         ]
 
     def __str__(self) -> str:

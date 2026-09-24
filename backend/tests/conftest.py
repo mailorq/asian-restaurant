@@ -27,6 +27,18 @@ def identity_signing_key(settings, _identity_key_file):
     settings.IDENTITY_JWT_PRIVATE_KEY_FILE = _identity_key_file
 
 
+@pytest.fixture(scope="session")
+def _static_root(tmp_path_factory):
+    return tmp_path_factory.mktemp("staticfiles")
+
+
+@pytest.fixture(autouse=True)
+def static_root(settings, _static_root):
+    # whitenoise indexes STATIC_ROOT whenever a test client builds the middleware, and only the image runs
+    # collectstatic, so tests get an existing empty root instead of the missing one in the checkout
+    settings.STATIC_ROOT = _static_root
+
+
 @pytest.fixture(autouse=True)
 def cart_redis(settings):
     # isolate cart data on a throwaway redis db and force the async client to
