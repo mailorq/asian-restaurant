@@ -15,7 +15,7 @@ from menu.models import Product, StockAdjustment
 from orders import service as order_service
 from orders.models import OrderOutbox
 from tests.admin_forms import rendered_form
-from tests.concurrency import await_a_lock_waiter, in_thread
+from tests.concurrency import Writer, queue_behind
 
 ADDRESS = "ул. Пушкина, 12"
 
@@ -181,7 +181,7 @@ def test_a_correction_queued_behind_a_sale_is_refused_after_it(monkeypatch):
         is_active=True,
     )
     seen = product.version
-    holding, release, errors, outcome = threading.Event(), threading.Event(), [], {}
+    holding, release, outcome = threading.Event(), threading.Event(), {}
     real = inventory.record_stock_change
 
     def sale_holds_the_row(*args, **kwargs):
@@ -200,21 +200,16 @@ def test_a_correction_queued_behind_a_sale_is_refused_after_it(monkeypatch):
         except inventory.StaleProduct:
             outcome["correction"] = "refused"
 
-    sale = in_thread("sale", lambda: _sell(product, 3, 201), errors)
-    correction = in_thread("correction", correct, errors)
-    sale.start()
-    assert holding.wait(timeout=15)
-    correction.start()
-    await_a_lock_waiter()
-    release.set()
-    sale.join(timeout=30)
-    correction.join(timeout=30)
+    sale = Writer("sale", lambda: _sell(product, 3, 201))
+    correction = Writer("correction", correct)
+    met = queue_behind(sale, correction, holding, release)
 
-    assert not errors, errors
+    assert (sale.error, correction.error) == (None, None)
     assert outcome == {"correction": "refused"}
     product.refresh_from_db()
     assert product.stock_quantity == 7
     assert sorted(_event_versions(product)) == [seen + 1]
+    assert met == "blocked"
 
 
 @pytest.mark.django_db(transaction=True)
@@ -230,7 +225,7 @@ def test_a_sale_queued_behind_a_correction_is_taken_from_the_corrected_stock(mon
         is_active=True,
     )
     seen = product.version
-    holding, release, errors = threading.Event(), threading.Event(), []
+    holding, release = threading.Event(), threading.Event()
     real = inventory._emit
 
     def correction_holds_the_row(target, **kwargs):
@@ -241,26 +236,20 @@ def test_a_sale_queued_behind_a_correction_is_taken_from_the_corrected_stock(mon
 
     monkeypatch.setattr(inventory, "_emit", correction_holds_the_row)
 
-    correction = in_thread(
+    correction = Writer(
         "correction",
         lambda: inventory.set_stock(
             product.id, 20, reason="инвентаризация", staff=staff, expected_version=seen
         ),
-        errors,
     )
-    sale = in_thread("sale", lambda: _sell(product, 3, 202), errors)
-    correction.start()
-    assert holding.wait(timeout=15)
-    sale.start()
-    await_a_lock_waiter()
-    release.set()
-    correction.join(timeout=30)
-    sale.join(timeout=30)
+    sale = Writer("sale", lambda: _sell(product, 3, 202))
+    met = queue_behind(correction, sale, holding, release)
 
-    assert not errors, errors
+    assert (correction.error, sale.error) == (None, None)
     product.refresh_from_db()
     assert product.stock_quantity == 17
     assert sorted(_event_versions(product)) == [seen + 1, seen + 2]
+    assert met == "blocked"
 
 
 @pytest.mark.django_db

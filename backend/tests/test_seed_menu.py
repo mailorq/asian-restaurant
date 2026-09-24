@@ -13,7 +13,7 @@ from menu.management.commands.seed_menu import _load_products
 from menu.models import Product, StockAdjustment
 from orders import service as order_service
 from orders.models import OrderOutbox
-from tests.concurrency import await_a_lock_waiter, in_thread
+from tests.concurrency import Writer, queue_behind
 
 pytestmark = pytest.mark.django_db
 
@@ -159,7 +159,7 @@ def _seed(outcome):
 @pytest.mark.django_db(transaction=True)
 def test_initial_stock_queued_behind_a_sale_is_refused_after_it(monkeypatch):
     product = _stocked_product("race_seed_sale_first")
-    holding, release, errors, outcome = threading.Event(), threading.Event(), [], {}
+    holding, release, outcome = threading.Event(), threading.Event(), {}
     real = inventory.record_stock_change
 
     def sale_holds_the_row(*args, **kwargs):
@@ -169,26 +169,21 @@ def test_initial_stock_queued_behind_a_sale_is_refused_after_it(monkeypatch):
             assert release.wait(timeout=20)
 
     monkeypatch.setattr(inventory, "record_stock_change", sale_holds_the_row)
-    sale = in_thread("sale", lambda: _buy(product, 3, 1), errors)
-    seed = in_thread("seed", _seed(outcome), errors)
-    sale.start()
-    assert holding.wait(timeout=15)
-    seed.start()
-    await_a_lock_waiter()
-    release.set()
-    sale.join(timeout=30)
-    seed.join(timeout=30)
+    sale = Writer("sale", lambda: _buy(product, 3, 1))
+    seed = Writer("seed", _seed(outcome))
+    met = queue_behind(sale, seed, holding, release)
 
-    assert not errors, errors
+    assert (sale.error, seed.error) == (None, None)
     assert outcome == {"seed": "refused"}
     product.refresh_from_db()
     assert product.stock_quantity == 7
+    assert met == "blocked"
 
 
 @pytest.mark.django_db(transaction=True)
 def test_a_sale_queued_behind_initial_stock_is_taken_from_it(monkeypatch):
     product = _stocked_product("race_seed_first")
-    holding, release, errors, outcome = threading.Event(), threading.Event(), [], {}
+    holding, release, outcome = threading.Event(), threading.Event(), {}
     real = inventory.set_stock
 
     def seed_holds_the_catalog(*args, **kwargs):
@@ -198,17 +193,12 @@ def test_a_sale_queued_behind_initial_stock_is_taken_from_it(monkeypatch):
         return real(*args, **kwargs)
 
     monkeypatch.setattr(inventory, "set_stock", seed_holds_the_catalog)
-    seed = in_thread("seed", _seed(outcome), errors)
-    sale = in_thread("sale", lambda: _buy(product, 3, 2), errors)
-    seed.start()
-    assert holding.wait(timeout=15)
-    sale.start()
-    await_a_lock_waiter()
-    release.set()
-    seed.join(timeout=30)
-    sale.join(timeout=30)
+    seed = Writer("seed", _seed(outcome))
+    sale = Writer("sale", lambda: _buy(product, 3, 2))
+    met = queue_behind(seed, sale, holding, release)
 
-    assert not errors, errors
+    assert (seed.error, sale.error) == (None, None)
     assert outcome == {"seed": "applied"}
     product.refresh_from_db()
     assert product.stock_quantity == 47
+    assert met == "blocked"
