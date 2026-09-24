@@ -12,7 +12,7 @@ x-app-hardening: &app-hardening
 
 # database roles, run as the bootstrap superuser before each migration job: the runtime role gets DML only and the migrator owns the schema objects
 x-db-provision: &db-provision
-  image: postgres:16-alpine
+  image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
   user: "70:70"
   entrypoint: ["psql", "-X", "-q", "-f", "/provision.sql"]
   volumes:
@@ -26,7 +26,7 @@ x-db-provision: &db-provision
 
 services:
   db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -41,7 +41,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     command: ["redis-server", "--save", "", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
     networks: [cache]
     volumes:
@@ -54,7 +54,7 @@ services:
     restart: unless-stopped
 
   rabbitmq:
-    image: rabbitmq:4.3-management-alpine
+    image: rabbitmq:4.3-management-alpine@sha256:ce634665a8e7262384a793581c20cb8a46343887446eb391b77c814febeca4b2
     volumes:
       - rabbitmqdata:/var/lib/rabbitmq
       - ./ops/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
@@ -138,7 +138,7 @@ services:
 
   # one-shot without network that hands the media volume to the runtime user 10001
   media-init:
-    image: python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
+    image: python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0
     user: "0:0"
     entrypoint: ["chown", "-R", "10001:10001", "/media"]
     network_mode: none
@@ -237,7 +237,7 @@ services:
 
   # independent operations service (own DB, own credentials)
   operations-db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     environment:
       POSTGRES_DB: ${OPERATIONS_DB_NAME:-operations}
       POSTGRES_USER: ${OPERATIONS_DB_USER:-ops_user}

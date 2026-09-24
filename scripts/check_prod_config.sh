@@ -78,6 +78,36 @@ if exposed:
     raise SystemExit(1)
 PORTS
 
+# every image the stack, its release jobs, ci and the smokes run is addressed by digest, one digest per tag, so a rebuild or a pull cannot change what was tested
+python3 - <<'DIGEST' || fail=1
+import pathlib, re
+
+PINNED = re.compile(r"^[\w./-]+:[\w.-]+@sha256:[0-9a-f]{64}$")
+refs = []
+for dockerfile in ("backend/Dockerfile", "services/order_operations/Dockerfile", "frontend/Dockerfile"):
+    text = pathlib.Path(dockerfile).read_text(encoding="utf-8")
+    stages = set(re.findall(r"^FROM\s+\S+\s+AS\s+(\S+)", text, re.M | re.I))
+    refs += [(dockerfile, ref) for ref in re.findall(r"^FROM\s+(\S+)", text, re.M) if ref not in stages]
+for path in [*sorted(pathlib.Path(".").glob("compose*.yaml")), pathlib.Path(".github/workflows/ci.yml")]:
+    refs += [(str(path), ref) for ref in re.findall(r"^\s*image:\s*(\S+)", path.read_text(encoding="utf-8"), re.M)]
+# ci steps and smokes name images inline, so every repository used above is looked for there as well
+repos = {ref.split("@")[0].rsplit(":", 1)[0] for _, ref in refs}
+inline = re.compile(r"(?<![\w./@-])((?:%s):[\w.-]+(?:@sha256:[0-9a-f]{64})?)(?![\w/:])" % "|".join(map(re.escape, sorted(repos))))
+for path in [pathlib.Path(".github/workflows/ci.yml"), *sorted(pathlib.Path("scripts").glob("*.sh"))]:
+    refs += [(str(path), ref) for ref in inline.findall(path.read_text(encoding="utf-8"))]
+
+failed = sorted({f"{where}: {ref}" for where, ref in refs if not PINNED.match(ref)})
+digests = {}
+for _, ref in refs:
+    if PINNED.match(ref):
+        tag, digest = ref.split("@")
+        digests.setdefault(tag, set()).add(digest)
+failed += [f"{tag} pinned to {len(found)} digests" for tag, found in sorted(digests.items()) if len(found) > 1]
+if failed:
+    print("FAIL: images not pinned to one digest: " + "; ".join(failed))
+    raise SystemExit(1)
+DIGEST
+
 # the ingress terminates TLS and the hop to nginx is plain http, so overwriting these two turns the redirect below into a loop and collapses every client into one rate-limit bucket
 PROXY_PARAMS=frontend/nginx/proxy_params.conf
 grep -Eq 'proxy_set_header[[:space:]]+X-Forwarded-Proto[[:space:]]+\$scheme;' "$PROXY_PARAMS" && {

@@ -7,7 +7,7 @@
 set -euo pipefail
 
 PROJ="${SMOKE_PROJECT:-ar_dbroles_$(date +%s)_$$}"
-PG_IMAGE=postgres:16-alpine
+PG_IMAGE=postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
 WORK="$(mktemp -d)"
 # docker on windows takes host paths in its own form, and git bash must not rewrite the container side
 if command -v cygpath >/dev/null 2>&1; then

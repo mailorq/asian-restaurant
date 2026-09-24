@@ -309,3 +309,22 @@ dc exec backend python manage.py retire_legacy_queue --discard-backlog
 [compose.yaml](compose.yaml) redis запускается с `--appendonly yes
 --maxmemory-policy noeviction` и томом `redis_data`. При изменении команды redis
 пересоздать контейнер: `dc up -d redis`.
+
+## Образы по digest
+
+Каждый образ стека, одноразовых задач, CI и smoke-скриптов указан как `тег@sha256:...`: пересборка или
+повторный `pull` не может подменить то, что прошло проверки. Тег оставлен рядом для чтения, решает digest.
+Гейт `scripts/check_prod_config.sh` падает на ссылке без digest и на теге, закрепленном в разных местах
+разными digest.
+
+Обновление, например после выхода исправлений безопасности базового образа:
+
+```bash
+# digest индекса, общего для всех платформ, а не манифеста одной платформы
+docker buildx imagetools inspect python:3.13-slim --format '{{json .Manifest}}'
+# заменить digest этого тега во всех местах сразу и убедиться, что гейт зеленый
+git grep -n 'python:3.13-slim@sha256'
+bash scripts/check_prod_config.sh
+```
+
+Затем полный CI и smoke: новый базовый образ меняет то, на чем собираются и работают все процессы.

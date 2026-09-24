@@ -79,7 +79,7 @@ services:
 
   # release step before migrations and the runtime (DEPLOY.md), idempotent: creates vhosts, users and permissions
   rabbitmq-provision:
-    image: rabbitmq:4.3-management-alpine
+    image: rabbitmq:4.3-management-alpine@sha256:ce634665a8e7262384a793581c20cb8a46343887446eb391b77c814febeca4b2
     profiles: ["provision"]
     hostname: rabbitmq-provision
     depends_on:
