@@ -201,3 +201,28 @@ def test_neither_the_schema_nor_its_page_has_a_url_in_production(settings):
 
     settings.PRODUCTION = False
     assert _schema_url("/docs") == "/docs"
+
+
+def test_a_new_command_past_the_limit_is_429_and_a_repeat_of_the_first_is_still_200(
+    client, keypair, settings
+):
+    settings.COMMAND_LIMIT_PER_ORDER = 1
+    first = _post(client, keypair, key="k1")
+    refused = _post(client, keypair, key="k2")
+    # the answer to the first was lost on the way, so the client sends it again
+    repeat = _post(client, keypair, key="k1")
+
+    assert (first.status_code, refused.status_code, repeat.status_code) == (202, 429, 200)
+    assert 1 <= int(refused["Retry-After"]) <= settings.COMMAND_LIMIT_WINDOW_SECONDS
+    assert repeat.json()["command_id"] == first.json()["command_id"]
+    assert OperationCommand.objects.count() == 1
+
+
+def test_an_unreachable_limiter_answers_503_and_creates_nothing(client, keypair, settings):
+    settings.REDIS_URL = "redis://127.0.0.1:1/0"
+
+    response = _post(client, keypair)
+
+    assert (response.status_code, response["Retry-After"]) == (503, "1")
+    assert response.json() == {"detail": "service temporarily unavailable"}
+    assert OperationCommand.objects.count() == 0

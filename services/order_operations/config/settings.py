@@ -66,6 +66,12 @@ COMMANDS_RABBITMQ_URL = env("OPERATIONS_COMMANDS_RABBITMQ_URL", default="")
 
 IDENTITY_JWKS_URL = env("IDENTITY_JWKS_URL", default="")
 
+# counters of new commands per employee and per employee and order, used by the api alone; without a store it creates no command
+REDIS_URL = env("OPERATIONS_REDIS_URL", default="")
+COMMAND_LIMIT_WINDOW_SECONDS = env.int("OPERATIONS_COMMAND_LIMIT_WINDOW_SECONDS", default=60)
+COMMAND_LIMIT_PER_ACTOR = env.int("OPERATIONS_COMMAND_LIMIT_PER_ACTOR", default=30)
+COMMAND_LIMIT_PER_ORDER = env.int("OPERATIONS_COMMAND_LIMIT_PER_ORDER", default=5)
+
 # every process exports its own counters on this port, since none can see another's
 METRICS_PORT = env.int("OPERATIONS_METRICS_PORT", default=9101)
 

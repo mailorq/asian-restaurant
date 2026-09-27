@@ -22,6 +22,7 @@ from event_contracts import (
     TransitionRejectCode,
 )
 
+from operations import ratelimit
 from operations.models import OperationAuditLog, OperationCommand, OperationsOutbox
 
 COMMAND_TYPE_TRANSITION = "orders.transition"
@@ -112,6 +113,7 @@ def create_transition_command(
     existing = OperationCommand.objects.filter(**identity).first()
     if existing is not None:
         return _dedup(existing, request), False
+    ratelimit.charge(actor_id, order_id)
 
     try:
         with transaction.atomic():

@@ -3,6 +3,7 @@ from ninja import NinjaAPI, Schema
 
 from accounts.api import router as auth_router
 from cart.api import router as cart_router
+from common.ratelimit import Throttled
 from employee.api import router as employee_router
 from menu.api import router as menu_router
 from orders.api import router as orders_router
@@ -25,6 +26,13 @@ class HealthOut(Schema):
 @api.get("/health", response=HealthOut, auth=None, tags=["ops"])
 def health(request) -> dict:
     return {"status": "ok"}
+
+
+@api.exception_handler(Throttled)
+def throttled(request, exc: Throttled):
+    response = api.create_response(request, {"detail": exc.message}, status=429)
+    response["Retry-After"] = str(exc.retry_after)
+    return response
 
 
 api.add_router("/auth", auth_router)
