@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,8 +9,8 @@ description = "Versioned event/command contracts shared across services (no Djan
 requires-python = ">=3.13"
 dependencies = ["pydantic>=2.7"]
 
-[project.optional-dependencies]
-dev = ["pytest>=8.3"]
+[dependency-groups]
+dev = ["pytest==9.1.1"]
 
 [tool.setuptools]
 packages = ["event_contracts"]

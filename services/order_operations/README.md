@@ -67,13 +67,13 @@ docker compose logs operations-migrate
 docker compose exec operations-db psql -U ops_user -d operations -c "\dt"
 
 # tests
-docker compose exec operations-api sh -lc "cd /packages/event_contracts && python -m pytest"
-docker compose exec operations-api sh -lc "cd /app && pytest"
+docker compose exec operations-api sh -lc "cd /srv/packages/event_contracts && python -m pytest"
+docker compose exec operations-api pytest
 
 # isolation test that needs the storefront DSN (CI/test profile only; never in prod/dev)
 docker compose -f compose.yaml -f compose.test.yaml up -d db operations-api
 docker compose -f compose.yaml -f compose.test.yaml exec operations-api \
-  sh -lc "cd /app && pytest tests/test_isolation.py"
+  pytest tests/test_isolation.py
 
 # shadow round-trip
 docker compose exec operations-api python manage.py publish_test_event --order-id 555999 --customer-id 88

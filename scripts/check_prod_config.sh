@@ -94,6 +94,7 @@ for dockerfile in ("backend/Dockerfile", "services/order_operations/Dockerfile",
     stages = set(re.findall(r"^FROM\s+\S+\s+AS\s+(\S+)", text, re.M | re.I))
     refs += [(dockerfile, ref) for ref in re.findall(r"^FROM\s+(\S+)", text, re.M) if ref not in stages]
     refs += [(dockerfile, ref) for ref in re.findall(r"^#\s*syntax=(\S+)", text, re.M)]
+    refs += [(dockerfile, ref) for ref in re.findall(r"^COPY\s+--from=(\S+)", text, re.M) if ref not in stages]
 for path in [*sorted(pathlib.Path(".").glob("compose*.yaml")), pathlib.Path(".github/workflows/ci.yml")]:
     refs += [(str(path), ref) for ref in re.findall(r"^\s*image:\s*(\S+)", path.read_text(encoding="utf-8"), re.M)]
 repos = {ref.split("@")[0].rsplit(":", 1)[0] for _, ref in refs}
