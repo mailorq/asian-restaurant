@@ -1,11 +1,14 @@
 from django import forms
 from django.contrib import admin
+from django.core.files.uploadedfile import UploadedFile
 
 from common.forms import RenderedValuesForm
 from menu import inventory
 from menu.models import Ingredient, Product, StockAdjustment
 
 _ROW_FIELDS = frozenset(f.name for f in Product._meta.concrete_fields)
+# the admin location in frontend/nginx/default.conf takes a larger body, so an oversized photo gets this form's message and not a bare 413
+PRODUCT_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 
 
 class ProductAdminForm(RenderedValuesForm, forms.ModelForm):
@@ -32,6 +35,12 @@ class ProductAdminForm(RenderedValuesForm, forms.ModelForm):
         super().__init__(*args, **kwargs)
         if self.instance.pk and not self.is_bound:
             self.fields["expected_version"].initial = self.instance.version
+
+    def clean_image(self):
+        image = self.cleaned_data.get("image")
+        if isinstance(image, UploadedFile) and image.size > PRODUCT_IMAGE_MAX_BYTES:
+            raise forms.ValidationError("Фото больше 5 МБ")
+        return image
 
     def clean(self):
         cleaned = super().clean()

@@ -21,6 +21,11 @@ services:
   frontend:
     build:
       target: dev
+    # the vite server runs as root over the host checkout and writes its cache and npm logs outside /tmp
+    read_only: false
+    cap_drop: !reset []
+    mem_limit: 1g
+    pids_limit: 256
     environment:
       CHOKIDAR_USEPOLLING: "true"
       WATCHPACK_POLLING: "true"
@@ -30,3 +35,12 @@ services:
       - /app/node_modules
     ports:
       - "5173:5173"
+
+  # the management ui for local work; a port is published only through a network that is not internal
+  rabbitmq:
+    ports:
+      - "127.0.0.1:15672:15672"
+    networks: [dev_host]
+
+networks:
+  dev_host:

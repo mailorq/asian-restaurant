@@ -84,6 +84,15 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      redis:
+        # the command limiter is asserted on a real store: its atomicity is the property under test
+        image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
       rabbitmq:
         # the bridge's retry guarantee is a broker behaviour, so it is asserted against a real one; the test waits for the port itself
         image: rabbitmq:4.3-management-alpine@sha256:ce634665a8e7262384a793581c20cb8a46343887446eb391b77c814febeca4b2
@@ -94,6 +103,7 @@ jobs:
     env:
       OPERATIONS_SECRET_KEY: ci-ops-key
       OPERATIONS_DATABASE_URL: postgres://ops_user:ops_pass@localhost:5432/operations
+      OPERATIONS_REDIS_URL: redis://localhost:6379/0
       BRIDGE_MQ_URL_FOR_TRANSPORT: amqp://ci:ci@localhost:5672/
       REQUIRE_BRIDGE_TRANSPORT_TESTS: "1"
     steps:
@@ -243,6 +253,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/db_roles_smoke.sh
+
+  stack:
+    # the production render released as DEPLOY.md releases it: nginx and prometheus without root, the photo upload at its limits, a recreated backend
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/stack_smoke.sh
 
   ops-pool:
     # the operations pool on the production render: a pool of one under a locked projection and a burst past the
