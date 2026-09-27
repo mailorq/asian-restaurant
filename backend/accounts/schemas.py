@@ -22,6 +22,7 @@ class UserOut(Schema):
     is_superuser: bool = False
     # the panel hides tabs it cannot use; the server still refuses them either way
     staff_role: str | None = None
+    transitions_via_commands: bool = False
 
     @staticmethod
     def resolve_name(obj) -> str:

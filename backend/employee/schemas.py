@@ -1,6 +1,8 @@
+import uuid
 from datetime import datetime
 from enum import StrEnum
 
+from event_contracts import NOTE_MAX, OrderStatus
 from ninja import Field, Schema
 from pydantic import ConfigDict
 
@@ -13,6 +15,26 @@ class TransitionIn(Schema):
     to_status: str
     note: str = Field(default="", max_length=255)
     expected_status: str | None = None  # optimistic guard against stale actions
+
+
+class TransitionCommandIn(Schema):
+    expected_status: OrderStatus
+    target_status: OrderStatus
+    reason: str = Field(default="", max_length=NOTE_MAX)
+
+
+class CommandOut(Schema):
+    command_id: uuid.UUID
+    status: str
+    result_code: str
+    result_detail: str
+    deadline_at: datetime | None
+    created_at: datetime
+
+
+class RefusalOut(Schema):
+    detail: str
+    code: str = ""
 
 
 class InventoryItemOut(Schema):

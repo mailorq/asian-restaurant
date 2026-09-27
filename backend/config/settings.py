@@ -123,6 +123,9 @@ IDENTITY_JWT_PREVIOUS_PUBLIC_KEY = env("IDENTITY_JWT_PREVIOUS_PUBLIC_KEY", defau
 IDENTITY_JWT_PREVIOUS_PUBLIC_KEY_FILE = env("IDENTITY_JWT_PREVIOUS_PUBLIC_KEY_FILE", default="")
 IDENTITY_JWT_PREVIOUS_KID = env("IDENTITY_JWT_PREVIOUS_KID", default="")
 
+# the employee panel reaches the operations command api only through this server, never from the browser
+OPERATIONS_API_URL = env("OPERATIONS_API_URL", default="http://operations-api:9000")
+
 def _is_placeholder(value: str) -> bool:
     """
     a value the repository could have shipped as an example, by shape rather than by list

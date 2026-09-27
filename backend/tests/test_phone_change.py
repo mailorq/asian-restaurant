@@ -120,7 +120,12 @@ def test_the_migration_aligns_the_login_with_the_phone_an_admin_changed():
 
         MigrationExecutor(connection).migrate([after])
 
-        User = get_user_model()
+        # the schema of the migration under test, which later migrations may have grown since
+        User = (
+            MigrationExecutor(connection)
+            .loader.project_state([after])
+            .apps.get_model("accounts", "User")
+        )
         assert User.objects.get(pk=split.pk).username == NEW
         assert (User.objects.get(pk=typed.pk).username, User.objects.get(pk=typed.pk).phone) == (
             "+380673333333",
@@ -151,5 +156,8 @@ def test_the_migration_stops_at_a_split_it_cannot_resolve():
         with pytest.raises(RuntimeError, match="login and phone"):
             MigrationExecutor(connection).migrate([after])
     finally:
-        get_user_model().objects.all().delete()
-        MigrationExecutor(connection).migrate(leaves)
+        executor = MigrationExecutor(connection)
+        executor.loader.project_state([before]).apps.get_model(
+            "accounts", "User"
+        ).objects.all().delete()
+        executor.migrate(leaves)

@@ -27,35 +27,50 @@ def _hit(bucket: str, window: int) -> int:
         return 1
 
 
-def _guard(hits: int, limit: int) -> None:
+class Throttled(HttpError):
+    """answered with retry after set to the window, the longest a caller can have to wait"""
+
+    def __init__(self, window: int) -> None:
+        super().__init__(429, "Слишком много запросов. Попробуйте позже.")
+        self.retry_after = window
+
+
+def _guard(hits: int, limit: int, window: int) -> None:
     if hits > limit:
-        raise HttpError(429, "Слишком много запросов. Попробуйте позже.")
+        raise Throttled(window)
 
 
-def rate_limit(scope: str, limit: int, window: int):
+def rate_limit(scope: str, limit: int, window: int, per_user: bool = False):
+    def bucket_of(request) -> str:
+        return (
+            f"rl:{scope}:user:{request.auth.pk}"
+            if per_user
+            else f"rl:{scope}:{_client_ip(request)}"
+        )
+
     def decorator(view):
         if inspect.iscoroutinefunction(view):
 
             @functools.wraps(view)
             async def awrapper(request, *args, **kwargs):
-                bucket = f"rl:{scope}:{_client_ip(request)}"
+                bucket = bucket_of(request)
                 try:
                     hits = await sync_to_async(_hit)(bucket, window)
                 except Exception as exc:
                     raise HttpError(503, "Сервис временно недоступен. Повторите позже.") from exc
-                _guard(hits, limit)
+                _guard(hits, limit, window)
                 return await view(request, *args, **kwargs)
 
             return awrapper
 
         @functools.wraps(view)
         def wrapper(request, *args, **kwargs):
-            bucket = f"rl:{scope}:{_client_ip(request)}"
+            bucket = bucket_of(request)
             try:
                 hits = _hit(bucket, window)
             except Exception as exc:
                 raise HttpError(503, "Сервис временно недоступен. Повторите позже.") from exc
-            _guard(hits, limit)
+            _guard(hits, limit, window)
             return view(request, *args, **kwargs)
 
         return wrapper

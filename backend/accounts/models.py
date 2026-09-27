@@ -20,6 +20,8 @@ class User(AbstractUser):
     customer_version = models.PositiveIntegerField(default=1)
     # bumped to revoke outstanding staff tokens ahead of their TTL
     authz_version = models.PositiveIntegerField(default=1)
+    # this employee changes order status only through operations commands; the direct endpoint and the admin actions refuse them
+    transitions_via_commands = models.BooleanField(default=False)
 
     def __str__(self) -> str:
         return self.username

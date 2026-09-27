@@ -59,6 +59,12 @@ class OrderStatusHistoryInline(admin.TabularInline):
 
 def _make_transition_action(target: str):
     def action(modeladmin, request, queryset):
+        if request.user.transitions_via_commands:
+            messages.error(
+                request,
+                "Статус заказа меняется командой из панели сотрудника, переход из админки для вас закрыт",
+            )
+            return
         done = 0
         for order in queryset:
             try:

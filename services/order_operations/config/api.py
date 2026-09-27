@@ -1,4 +1,5 @@
 import datetime as dt
+import logging
 import uuid
 from decimal import Decimal
 
@@ -13,8 +14,10 @@ from operations.auth import EmployeeJWTAuth
 from operations.commands import CommandConflict, create_transition_command
 from operations.models import OperationCommand, OperationOrder
 from operations.pagination import DEFAULT_PAGE_SIZE, paginate
+from operations.ratelimit import LimiterUnavailable, RateLimited
 
 IDEMPOTENCY_HEADER = "Idempotency-Key"
+logger = logging.getLogger("operations.api")
 
 def _schema_url(path: str) -> str | None:
     # the schema names every staff endpoint and its fields; production serves neither it nor the page that renders it
@@ -86,8 +89,12 @@ class CommandOut(Schema):
     created_at: dt.datetime
 
 
-@api.post("/orders/{order_id}/transition-commands", response={202: CommandOut, 200: CommandOut},
-          tags=["commands"])
+class RefusalOut(Schema):
+    detail: str
+
+
+@api.post("/orders/{order_id}/transition-commands",
+          response={202: CommandOut, 200: CommandOut, 429: RefusalOut, 503: RefusalOut}, tags=["commands"])
 def request_transition(request, payload: TransitionCommandIn, response: HttpResponse,
                        order_id: int = Path(..., gt=0)):
     """asks the storefront to move an order; the command is applied there, never here"""
@@ -104,6 +111,13 @@ def request_transition(request, payload: TransitionCommandIn, response: HttpResp
         )
     except CommandConflict:
         raise HttpError(409, f"{IDEMPOTENCY_HEADER} reused with a different request") from None
+    except RateLimited as exc:
+        response["Retry-After"] = str(exc.retry_after)
+        return Status(429, {"detail": "too many new commands, retry later"})
+    except LimiterUnavailable as exc:
+        logger.warning("command limiter unavailable: %s", exc)
+        response["Retry-After"] = "1"
+        return Status(503, {"detail": "service temporarily unavailable"})
     except ValidationError:
         # ValidationError subclasses ValueError, so it has to be caught first; its text carries
         # the contract model and the minted ids and must not reach the client

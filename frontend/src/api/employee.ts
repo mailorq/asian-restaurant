@@ -105,6 +105,92 @@ export function useTransitionOrder() {
   });
 }
 
+// --- order status through operations commands ---------------------------
+export type CommandState = "pending" | "dispatched" | "succeeded" | "rejected" | "timed_out" | "dispatch_failed";
+
+export interface Command {
+  command_id: string;
+  status: CommandState;
+  result_code: string;
+  result_detail: string;
+  deadline_at: string | null;
+  created_at: string;
+}
+
+const SETTLED: CommandState[] = ["succeeded", "rejected", "timed_out", "dispatch_failed"];
+const REPEATS = 3;
+const WATCH_MS = 20_000;
+
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// an answer that leaves the outcome open: nothing arrived, operations was not reached, or the reply was lost
+function outcomeOpen(e: unknown): boolean {
+  return e instanceof ApiError && (e.status === 0 || e.status === 503 || e.status === 504);
+}
+
+// one action is one key: a repeat after an open outcome reuses it, so operations applies the action at most once
+export function useTransitionCommand() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (vars: {
+      orderId: number;
+      to_status: OrderStatus;
+      expected_status: OrderStatus;
+      note?: string;
+    }): Promise<Command> => {
+      const key = crypto.randomUUID();
+      const send = () =>
+        api<Command>(`/employee/orders/${vars.orderId}/transition-commands`, {
+          method: "POST",
+          headers: { "Idempotency-Key": key },
+          body: JSON.stringify({
+            expected_status: vars.expected_status,
+            target_status: vars.to_status,
+            reason: vars.note ?? "",
+          }),
+        });
+      let command: Command | null = null;
+      for (let attempt = 0; command === null; attempt++) {
+        try {
+          command = await send();
+        } catch (e) {
+          if (!outcomeOpen(e) || attempt + 1 >= REPEATS) throw e;
+          await pause(1000 * 2 ** attempt);
+        }
+      }
+      const until = Date.now() + WATCH_MS;
+      while (!SETTLED.includes(command.status) && Date.now() < until) {
+        await pause(1000);
+        command = await api<Command>(`/employee/commands/${command.command_id}`);
+      }
+      return command;
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["employee", "orders"] }),
+  });
+}
+
+const REJECTIONS: Record<string, string> = {
+  stale_status: "Заказ уже изменился, список обновлен",
+  invalid_transition: "Такой переход для заказа недоступен",
+  actor_not_authorized: "Права изменились с момента запроса, действие не выполнено",
+  command_expired: "Команда устарела и не выполнена",
+  order_not_found: "Заказ не найден",
+};
+
+export function commandVerdict(command: Command): { text: string; ok: boolean } {
+  switch (command.status) {
+    case "succeeded":
+      return { text: "Статус изменен", ok: true };
+    case "rejected":
+      return { text: REJECTIONS[command.result_code] ?? "Действие отклонено", ok: false };
+    case "timed_out":
+    case "dispatch_failed":
+      return { text: "Исход неизвестен, проверьте статус заказа позже", ok: false };
+    default:
+      return { text: "Команда принята, статус обновится в списке", ok: true };
+  }
+}
+
 // --- inventory ------------------------------------------------------------
 export function useInventory(search: string) {
   return useQuery({

@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Icon } from "../Icon";
 import { useToast } from "../../stores/toast";
 import { ORDER_STATUS, formatOrderDate, type OrderStatus } from "../../api/orders";
-import { useEmployeeOrders, useTransitionOrder } from "../../api/employee";
+import { commandVerdict, useEmployeeOrders, useTransitionCommand, useTransitionOrder } from "../../api/employee";
+import { useAuth } from "../../stores/auth";
 import { formatPrice } from "../../lib/menu";
 
 const NEXT_ACTIONS: Record<OrderStatus, OrderStatus[]> = {
@@ -32,11 +33,27 @@ export function EmployeeOrders() {
   const total = data?.total ?? 0;
   const pageSize = data?.page_size ?? 20;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const transition = useTransitionOrder();
+  const direct = useTransitionOrder();
+  const viaCommand = useTransitionCommand();
+  const byCommands = useAuth((s) => Boolean(s.user?.transitions_via_commands));
+  const pending = direct.isPending || viaCommand.isPending;
   const notify = useToast((s) => s.notify);
 
   function act(orderId: number, from: OrderStatus, to: OrderStatus) {
-    transition.mutate(
+    if (byCommands) {
+      viaCommand.mutate(
+        { orderId, to_status: to, expected_status: from },
+        {
+          onSuccess: (command) => {
+            const verdict = commandVerdict(command);
+            notify(`Заказ №${orderId}: ${verdict.text.toLowerCase()}`, verdict.ok ? undefined : "error");
+          },
+          onError: (e) => notify(e instanceof Error ? e.message : "Не удалось изменить статус", "error"),
+        },
+      );
+      return;
+    }
+    direct.mutate(
       { orderId, to_status: to, expected_status: from },
       {
         onSuccess: () => notify(`Заказ №${orderId}: ${ORDER_STATUS[to].label.toLowerCase()}`),
@@ -119,7 +136,7 @@ export function EmployeeOrders() {
                       <button
                         key={to}
                         onClick={() => act(order.id, order.status, to)}
-                        disabled={transition.isPending}
+                        disabled={pending}
                         className={`rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors disabled:opacity-50 ${
                           to === "cancelled"
                             ? "border border-danger/40 text-danger hover:bg-danger/10"

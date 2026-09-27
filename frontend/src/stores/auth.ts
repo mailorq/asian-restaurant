@@ -15,6 +15,7 @@ export interface CurrentUser {
   is_employee: boolean;
   is_superuser: boolean;
   staff_role: "restaurant_operator" | "restaurant_manager" | null;
+  transitions_via_commands: boolean;
 }
 
 interface AuthState {
