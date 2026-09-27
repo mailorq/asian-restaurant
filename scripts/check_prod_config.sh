@@ -78,23 +78,44 @@ if exposed:
     raise SystemExit(1)
 PORTS
 
-# every image the stack, its release jobs, ci and the smokes run is addressed by digest, one digest per tag, so a rebuild or a pull cannot change what was tested
+# every base image the stack, its release jobs, ci and the smokes run is addressed by digest, one digest per tag
 python3 - <<'DIGEST' || fail=1
-import pathlib, re
+import pathlib, re, shlex
 
 PINNED = re.compile(r"^[\w./-]+:[\w.-]+@sha256:[0-9a-f]{64}$")
+# options that take a value; an unknown option counts as a flag, so its value is judged as the image and fails
+VALUED = {"-e", "--env", "--env-file", "-v", "--volume", "--mount", "-w", "--workdir", "-u", "--user", "--name",
+          "--network", "--network-alias", "--add-host", "--entrypoint", "-p", "--publish", "--tmpfs", "--cap-add", "--cap-drop",
+          "--security-opt", "-m", "--memory", "--pids-limit", "-l", "--label", "--platform", "--pull", "-h",
+          "--hostname", "--health-cmd", "--health-interval", "--health-timeout", "--health-retries", "--ulimit"}
 refs = []
 for dockerfile in ("backend/Dockerfile", "services/order_operations/Dockerfile", "frontend/Dockerfile"):
     text = pathlib.Path(dockerfile).read_text(encoding="utf-8")
     stages = set(re.findall(r"^FROM\s+\S+\s+AS\s+(\S+)", text, re.M | re.I))
     refs += [(dockerfile, ref) for ref in re.findall(r"^FROM\s+(\S+)", text, re.M) if ref not in stages]
+    refs += [(dockerfile, ref) for ref in re.findall(r"^#\s*syntax=(\S+)", text, re.M)]
 for path in [*sorted(pathlib.Path(".").glob("compose*.yaml")), pathlib.Path(".github/workflows/ci.yml")]:
     refs += [(str(path), ref) for ref in re.findall(r"^\s*image:\s*(\S+)", path.read_text(encoding="utf-8"), re.M)]
-# ci steps and smokes name images inline, so every repository used above is looked for there as well
 repos = {ref.split("@")[0].rsplit(":", 1)[0] for _, ref in refs}
-inline = re.compile(r"(?<![\w./@-])((?:%s):[\w.-]+(?:@sha256:[0-9a-f]{64})?)(?![\w/:])" % "|".join(map(re.escape, sorted(repos))))
+known = re.compile(r"(?<![\w./@-])((?:%s):[\w.-]+(?:@sha256:[0-9a-f]{64})?)(?![\w/:])" % "|".join(map(re.escape, sorted(repos))))
 for path in [pathlib.Path(".github/workflows/ci.yml"), *sorted(pathlib.Path("scripts").glob("*.sh"))]:
-    refs += [(str(path), ref) for ref in inline.findall(path.read_text(encoding="utf-8"))]
+    text = re.sub(r"\\\n\s*", " ", path.read_text(encoding="utf-8"))
+    refs += [(str(path), ref) for ref in known.findall(text)]
+    assigned = dict(re.findall(r"^\s*(?:export\s+)?(\w+)=(\S+)", text, re.M))
+    # an image unknown to every file above is found by its position in the docker command
+    for command in re.findall(r"\bdocker\s+(?:run|create|pull)\s+([^;&|\n]*)", text):
+        lexer = shlex.shlex(command, posix=True)
+        lexer.whitespace_split = True
+        # read lazily: the arguments after the image may open a quote this line does not close
+        tokens = iter(lexer.get_token, None)
+        for token in tokens:
+            if token.startswith("-"):
+                if "=" not in token and token in VALUED:
+                    next(tokens, None)
+                continue
+            name = re.fullmatch(r"\$\{?(\w+)\}?", token)
+            refs.append((str(path), assigned.get(name.group(1), token) if name else token))
+            break
 
 failed = sorted({f"{where}: {ref}" for where, ref in refs if not PINNED.match(ref)})
 digests = {}
@@ -138,6 +159,8 @@ if bare:
     failed.append("these locations answer without the security headers: " + "; ".join(bare))
 if "server_tokens off;" not in conf:
     failed.append("nginx announces its version")
+if "absolute_redirect off;" not in conf:
+    failed.append("nginx redirects carry the scheme and port of its own hop, not the client's")
 # behind the ingress the connecting address is the ingress's, so such a limit is one bucket for every client
 if re.search(r"limit_req_zone\s+\$binary_remote_addr", conf):
     failed.append("a request limit keyed on the connecting address is one shared bucket behind the ingress")
@@ -201,23 +224,30 @@ if unguarded:
     raise SystemExit(1)
 MIGRATE
 
-# application images run production as 10001, compose keeps it, and only backend and media-init write media
+# application images run production as 10001 and nginx as 101, compose keeps it, and only backend and media-init write media
 RENDERED_JSON="$rendered_json" python3 - <<'NONROOT' || fail=1
 import json, os, pathlib, re
 
 APP = ("backend/Dockerfile", "services/order_operations/Dockerfile")
+USERS = {**dict.fromkeys(APP, "10001:10001"), "frontend/Dockerfile": "101:101"}
 failed = []
-for dockerfile in APP:
+for dockerfile, user in USERS.items():
     text = pathlib.Path(dockerfile).read_text(encoding="utf-8")
     stage = re.search(r"^FROM \S+ AS prod\s*$(.*?)(?=^FROM |\Z)", text, re.M | re.S)
     users = re.findall(r"^USER\s+(\S+)\s*$", stage.group(1), re.M) if stage else []
-    if users[-1:] != ["10001:10001"]:
-        failed.append(f"{dockerfile}: the prod stage does not run as 10001:10001")
+    if users[-1:] != [user]:
+        failed.append(f"{dockerfile}: the prod stage does not run as {user}")
 
 services = json.loads(os.environ["RENDERED_JSON"])["services"]
 for name, spec in sorted(services.items()):
-    if (spec.get("build") or {}).get("dockerfile") in APP and spec.get("user"):
+    if ((spec.get("build") or {}).get("dockerfile") in APP or name == "frontend") and spec.get("user"):
         failed.append(f"{name}: user {spec['user']!r} overrides the image user")
+
+# nginx cannot bind a privileged port without root, and the published port has to reach the one it listens on
+listen = set(re.findall(r"^\s*listen\s+(\d+)", pathlib.Path("frontend/nginx/default.conf").read_text(encoding="utf-8"), re.M))
+targets = {str(p.get("target")) for p in (services.get("frontend") or {}).get("ports") or []}
+if len(listen) != 1 or int(next(iter(listen))) < 1024 or targets != listen:
+    failed.append(f"frontend publishes {sorted(targets)} while nginx listens on {sorted(listen)}, expected one unprivileged port")
 
 writers = sorted({
     name for name, spec in services.items() for v in spec.get("volumes") or []
@@ -274,10 +304,16 @@ for name, spec in sorted(services.items()):
         found.append("tmpfs " + ", ".join(sorted(wanted - mounts)))
     if found:
         failed.append(f"{name}: {', '.join(found)}")
+frontend = services.get("frontend") or {}
+found = gaps(frontend, [])
+if "/tmp" not in {t.split(":", 1)[0] for t in frontend.get("tmpfs") or []}:
+    found.append("tmpfs /tmp")
+if found:
+    failed.append("frontend: " + ", ".join(found))
 found = gaps(services.get("media-init") or {}, ["CHOWN", "DAC_READ_SEARCH"])
 if found:
     failed.append("media-init: " + ", ".join(found))
-for name in ("storefront-db-provision", "operations-db-provision"):
+for name in ("storefront-db-provision", "operations-db-provision", "prometheus", "operations-redis"):
     spec = services.get(name) or {}
     found = gaps(spec, [])
     if str(spec.get("user") or "0").split(":")[0] in ("0", "root"):
@@ -288,6 +324,56 @@ if failed:
     print("FAIL: not hardened: " + "; ".join(failed))
     raise SystemExit(1)
 HARDEN
+
+# the network model written in DEPLOY.md, against the render with the release jobs: a shared network connects every pair of its members both ways
+RENDERED_JSON="$(docker compose "${PROD[@]}" --profile provision config --format json)" python3 - <<'NETWORKS' || fail=1
+import json, os
+
+MODEL = {
+    "public_frontend": {"frontend"},
+    "public_prometheus": {"prometheus"},
+    "egress_backend": {"backend"},
+    "edge": {"frontend", "backend"},
+    "storefront": {"db", "backend", "relay", "commands-consumer", "storefront-migrate", "storefront-db-provision"},
+    "cache": {"redis", "backend"},
+    "broker_storefront": {"rabbitmq", "backend", "relay", "commands-consumer"},
+    "broker_operations": {"rabbitmq", "operations-consumer", "operations-bridge", "commands-relay"},
+    "broker_admin": {"rabbitmq", "rabbitmq-provision"},
+    "operations": {"operations-db", "operations-api", "operations-consumer", "operations-bridge", "commands-relay",
+                   "operations-migrate", "operations-db-provision"},
+    "ops_limiter": {"operations-api", "operations-redis"},
+    "identity": {"backend", "operations-api"},
+    "metrics_storefront": {"prometheus", "backend", "relay", "commands-consumer"},
+    "metrics_operations": {"prometheus", "operations-api", "operations-consumer", "commands-relay"},
+    "metrics_broker": {"prometheus", "rabbitmq"},
+}
+WITH_ROUTE_OUT = {"public_frontend", "public_prometheus", "egress_backend"}
+rendered = json.loads(os.environ["RENDERED_JSON"])
+services, networks = rendered["services"], rendered.get("networks") or {}
+failed = []
+actual = {}
+for name, spec in sorted(services.items()):
+    if spec.get("network_mode") == "none":
+        continue
+    joined = spec.get("networks") or {"default": None}
+    for network in joined:
+        actual.setdefault(network, set()).add(name)
+for network in sorted(set(MODEL) | set(actual)):
+    if actual.get(network, set()) != MODEL.get(network, set()):
+        failed.append(f"{network}: {sorted(actual.get(network, set()))}, the model has {sorted(MODEL.get(network, set()))}")
+    if network in networks and bool(networks[network].get("internal")) == (network in WITH_ROUTE_OUT):
+        failed.append(f"{network} is {'internal' if networks[network].get('internal') else 'routed out'} against the model")
+# a port is published through a network with a route out, so only the services that publish one may have it
+publishing = {name for name, spec in services.items() if spec.get("ports")}
+if not publishing <= set().union(*(MODEL[n] for n in ("public_frontend", "public_prometheus"))):
+    failed.append(f"these publish a port outside the model: {sorted(publishing)}")
+limiter = str(((services.get("operations-api") or {}).get("environment") or {}).get("OPERATIONS_REDIS_URL", ""))
+if not limiter.startswith("redis://operations-redis:"):
+    failed.append(f"operations-api counts new commands in {limiter!r}, not in operations-redis")
+if failed:
+    print("FAIL: networks: " + "; ".join(failed))
+    raise SystemExit(1)
+NETWORKS
 
 # per database, every application process holds at most its own pool: the sum, plus one manage.py run through dc exec, stays at half of max_connections or less
 RENDERED_JSON="$rendered_json" python3 - <<'DBPOOL' || fail=1

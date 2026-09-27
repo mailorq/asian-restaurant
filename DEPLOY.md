@@ -47,6 +47,12 @@ dc up -d
 capabilities и с лимитами памяти и процессов. Статика собирается при сборке образа. Писать
 можно только в tmpfs `/tmp` и, у backend, в `/tmp/prometheus` и том `media`.
 
+Nginx во frontend работает под uid 101 на порту 8080, на хосте он опубликован как `127.0.0.1:80`. Корень
+только на чтение, тела запросов и pid лежат в tmpfs `/tmp`. Тело запроса ограничено 1 МБ, на `/admin/`
+6 МБ: фото товара до 5 МБ проверяет форма админки. Адрес backend nginx берет из DNS Docker на каждый
+запрос, поэтому пересозданный backend доступен без перезапуска nginx. Prometheus работает под uid 65534
+и пишет только в том `promdata`.
+
 Владельца тома `media` выставляет `media-init` перед стартом backend. Это порядок запуска, а не
 восстановление: повторно он не запускается ни политикой перезапуска, ни сам по себе. Если в
 том попали файлы root (восстановление из копии, запись с хоста), владельца возвращают явно:
@@ -90,6 +96,9 @@ sudo chmod 0440 /etc/asian-restaurant/identity_jwt_private_key.pem
 Operations берёт открытые ключи с `http://backend:8000/api/auth/jwks` внутри сети. Этот путь
 исключён из HTTPS-редиректа, так как TLS внутри сети нет, а `DJANGO_ALLOWED_HOSTS` обязан
 содержать `backend`: иначе Operations не проверит ни одного токена и ответит `401` на любой запрос.
+Обратный путь такой же: backend вызывает команды на `http://operations-api:9000`, поэтому
+`OPERATIONS_ALLOWED_HOSTS` обязан содержать `operations-api`, иначе Operations отвечает `400` на
+каждый вызов, а панель сотрудника получает `502`.
 
 ### Роли PostgreSQL
 
@@ -294,6 +303,113 @@ dc exec backend python manage.py retire_legacy_queue --discard-backlog
 Повторный запуск ничего не делает. Первая команда без `--discard-backlog` ничего не удаляет, но
 после нее очередь уже не растет.
 
+## Лимит новых команд в Operations
+
+Operations считает новые команды в `operations-redis`: по умолчанию 30 в минуту на сотрудника
+и 5 в минуту на пару сотрудник и заказ (`OPERATIONS_COMMAND_LIMIT_PER_ACTOR`,
+`OPERATIONS_COMMAND_LIMIT_PER_ORDER`, `OPERATIONS_COMMAND_LIMIT_WINDOW_SECONDS`). Повтор существующей
+команды лимит не тратит. Два одновременных первых запроса с одним ключом или создание, упавшее после
+списания, тратят по единице, возврата нет: команд не бывает больше, чем списаний. Без `operations-redis`
+новые команды получают `503`, повторы существующих отвечают как обычно. Счетчики не переживают
+перезапуск `operations-redis`, после него окно начинается заново.
+
+## Смена статуса заказа командами
+
+Сотрудник с флагом `transitions_via_commands` меняет статус заказа только командой: панель отправляет
+ее в backend, backend вызывает operations-api с токеном, который выпускает сам и в браузер не отдает
+(ADR-0001, ADR-0002). Прямой переход `POST /api/employee/orders/{id}/transition` и действия перехода в
+админке для такого сотрудника закрыты. Остальные работают как раньше.
+Backend ограничивает запросы сотрудника к командам: 60 отправок и 240 чтений статуса в минуту,
+повторы входят в счет.
+
+```bash
+# переключить сотрудников на команды
+dc exec backend python manage.py transitions_via_commands +79990000001 +79990000002
+# вернуть на прямой переход
+dc exec backend python manage.py transitions_via_commands +79990000001 --off
+```
+
+Откат идет по сотрудникам и сразу. Команды, которые уже приняты, доезжают и применяются: consumer
+сверяет `expected_status` под блокировкой заказа, поэтому команда и прямой переход по одному заказу
+не применятся оба. Команды в `timed_out` и `dispatch_failed` сами не закрываются: оператор проверяет
+заказ и выносит решение через `resolve_command` (runbook-0008). Запасного пути нет: если Operations
+недоступен, переключенный сотрудник получает отказ, а заказ не меняется. Вернуть его на прямой
+переход решает оператор.
+
+## Резервная копия и восстановление
+
+Копия состоит из трех частей: `pg_dump -Fc` обеих баз от bootstrap-пользователя и архива тома `media`.
+Восстановление на пустой установке идет в таком порядке: поднять `db` и `operations-db`, выдать роли
+(`storefront-db-provision`, `operations-db-provision`), затем `pg_restore --no-owner --role=<side>_migrator`,
+чтобы владельцем объектов стал migrator, а runtime-роль получила свои права. Потом распаковать `media`
+в том и запустить `media-init`, после чего выполнить обычный релиз. Брокер не копируется: сообщения в
+полете теряются, поэтому после восстановления снимок `emit_source_state --snapshot` и `reconcile` в
+Operations показывают, что проекции сходятся.
+
+`scripts/restore_rehearsal.sh` проходит этот путь на двух одноразовых стендах: сравнивает строки обеих баз
+и байты `media` до и после, проверяет, что nginx отдает восстановленное фото, и сверяет новый снимок.
+Это репетиция на локальном стенде. Расписание, шифрование, срок хранения и хранилище вне хоста выбираются
+вместе с площадкой.
+
+## Сетевая модель
+
+Нужные потоки, источник → назначение:
+
+| Источник | Назначение | Порт | Зачем |
+|---|---|---|---|
+| ingress на хосте | frontend | 8080 (на хосте `127.0.0.1:80`), http | весь внешний трафик |
+| frontend | backend | 8000, http | `/api/`, `/admin/`, `/static/` |
+| backend | db, redis | 5432, 6379 | данные, кэш, корзина, лимиты |
+| backend | rabbitmq | 5672, amqp | операторские команды `dlq`, `retire_legacy_queue`, `publish_outbox` |
+| backend | geocoder | 443, https, наружу | проверка адреса доставки |
+| relay, commands-consumer | db, rabbitmq | 5432, 5672 | outbox и применение команд |
+| storefront-migrate, storefront-db-provision | db | 5432 | релиз |
+| operations-api | operations-db, operations-redis | 5432, 6379 | данные, лимит новых команд |
+| operations-api | backend | 8000, http | JWKS |
+| operations-consumer, operations-bridge, commands-relay | operations-db, rabbitmq | 5432, 5672 | проекции, мост, отправка команд |
+| operations-migrate, operations-db-provision | operations-db | 5432 | релиз |
+| rabbitmq-provision | rabbitmq | 4369, 25672, 15672 | выдача пользователей и прав |
+| prometheus | backend 8000, relay 9104, commands-consumer 9102, operations-api 9105, operations-consumer 9101, commands-relay 9103, rabbitmq 15692 | http | сбор метрик |
+| оператор на хосте | prometheus | 9090 (на хосте `127.0.0.1:9090`) | просмотр метрик |
+
+Сеть Docker связывает всех своих участников со всеми в обе стороны и на все порты, поэтому сети нарезаны по
+потокам. Состав каждой сети задан в [compose.yaml](compose.yaml) и сверяется гейтом `scripts/check_prod_config.sh`:
+
+| Сеть | Участники | Маршрут наружу |
+|---|---|---|
+| `public_frontend` | frontend | есть |
+| `public_prometheus` | prometheus | есть |
+| `egress_backend` | backend | есть |
+| `edge` | frontend, backend | нет |
+| `storefront` | db, backend, relay, commands-consumer, storefront-migrate, storefront-db-provision | нет |
+| `cache` | redis, backend | нет |
+| `broker_storefront` | rabbitmq, backend, relay, commands-consumer | нет |
+| `broker_operations` | rabbitmq, operations-consumer, operations-bridge, commands-relay | нет |
+| `broker_admin` | rabbitmq, rabbitmq-provision | нет |
+| `operations` | operations-db, operations-api, operations-consumer, operations-bridge, commands-relay, operations-migrate, operations-db-provision | нет |
+| `ops_limiter` | operations-api, operations-redis | нет |
+| `identity` | backend, operations-api | нет |
+| `metrics_storefront` | prometheus, backend, relay, commands-consumer | нет |
+| `metrics_operations` | prometheus, operations-api, operations-consumer, commands-relay | нет |
+| `metrics_broker` | prometheus, rabbitmq | нет |
+
+Связи, которые дает общая сеть сверх нужных потоков: внутри одного домена процессы видят порты друг друга;
+backend видит frontend; prometheus видит все порты rabbitmq, а не только 15692; operations-api видит все порты
+backend, а backend видит operations-api. Между доменами storefront и operations связь есть только через rabbitmq
+и сеть `identity`.
+
+Исключения для исходящего трафика. Маршрут наружу есть у трех сервисов, и он не ограничен по адресам:
+frontend и prometheus получают его вместе с сетью, через которую публикуют порт, backend получает его ради
+geocoder. У остальных сервисов маршрута из сетей Docker нет. Сузить выход до адреса geocoder может только
+правило на хосте или прокси с белым списком, это условие площадки.
+
+Операторские команды, которым нужен брокер, запускаются там, где он есть: на стороне storefront в backend,
+на стороне Operations в operations-consumer (например, `dc exec operations-consumer python manage.py dlq`).
+
+Проверка модели идет на локальном изолированном стенде (`scripts/stack_smoke.sh`): из контейнеров проверяются
+нужные и запрещенные соединения и наличие маршрута наружу, geocoder заменен локальной заглушкой. Это проверка
+сетей Docker, а не файрвола будущего хоста.
+
 ## Переменные окружения
 
 Все ключи описаны в [.env.example](.env.example). Значимые для этого этапа:
@@ -310,14 +426,24 @@ dc exec backend python manage.py retire_legacy_queue --discard-backlog
 --maxmemory-policy noeviction` и томом `redis_data`. При изменении команды redis
 пересоздать контейнер: `dc up -d redis`.
 
-## Образы по digest
+## Образы и воспроизводимость сборки
 
-Каждый образ стека, одноразовых задач, CI и smoke-скриптов указан как `тег@sha256:...`: пересборка или
-повторный `pull` не может подменить то, что прошло проверки. Тег оставлен рядом для чтения, решает digest.
-Гейт `scripts/check_prod_config.sh` падает на ссылке без digest и на теге, закрепленном в разных местах
-разными digest.
+Это три разных свойства, и сейчас выполнено только первое.
 
-Обновление, например после выхода исправлений безопасности базового образа:
+1. **Базовые образы закреплены.** Каждый `FROM`, `image:`, образ в командах `docker run`, `docker create` и
+   `docker pull` из CI и smoke-скриптов и образ синтаксиса Dockerfile (`# syntax=`) указаны как `тег@sha256:...`.
+   Повторный `pull` тега не подменит базу. Гейт `scripts/check_prod_config.sh` падает на ссылке без digest, в том
+   числе на образе, который больше нигде не упоминается, и на теге, закрепленном в разных местах разными digest.
+2. **Зависимости приложения разрешаются во время сборки.** Frontend ставится через `npm ci` по `package-lock.json`
+   с хешами целостности. В Python-образах `requirements.txt` закрепляет только прямые зависимости: транзитивные
+   и сам `pip` (`pip install --upgrade pip`) берутся последними на момент сборки, хешей нет. Пакеты `apt-get`
+   в backend приходят из текущего состояния репозиториев Debian. Пересборка того же коммита может дать другой образ.
+3. **Развертывается новая сборка, а не проверенный артефакт.** `dc up -d` собирает образы приложения на хосте из
+   рабочей копии. Чтобы на хост попал ровно тот образ, который прошел CI и smoke, его собирают один раз, публикуют
+   в реестр и указывают в compose по digest образа приложения. Реестр выбирается вместе с площадкой, до этого
+   гарантия ограничена пунктом 1.
+
+Обновление digest базового образа, например после выхода исправлений безопасности:
 
 ```bash
 # digest индекса, общего для всех платформ, а не манифеста одной платформы

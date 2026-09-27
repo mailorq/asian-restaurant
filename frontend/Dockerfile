@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 
 # deps: install once, reused by other stages
 FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS deps
@@ -23,8 +23,10 @@ RUN npm run build
 
 # prod: nginx serves the spa and proxies the api
 FROM nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10 AS prod
+COPY nginx/nginx.conf /etc/nginx/nginx.conf
 COPY nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY nginx/proxy_params.conf /etc/nginx/proxy_params.conf
 COPY nginx/security_headers.conf /etc/nginx/security_headers.conf
 COPY --from=build /app/dist /usr/share/nginx/html
-EXPOSE 80
+USER 101:101
+EXPOSE 8080

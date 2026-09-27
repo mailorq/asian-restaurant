@@ -1,5 +1,4 @@
-# Runtime dependencies — pinned. Source of truth is pyproject.toml; this file is
-# the reproducible lock for pip-based images and CI. Regenerate after upgrades.
+# runtime dependencies for images and ci: direct ones pinned, transitive ones resolved at install time, so this is not a lock
 
 # Web framework / API
 Django==5.2.17
@@ -18,6 +17,9 @@ redis==8.0.1
 
 # Order-event messaging
 pika==1.4.4
+
+# operations command api, called by the employee panel
+httpx==0.28.1
 
 # Application servers
 gunicorn==26.0.0
