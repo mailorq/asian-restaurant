@@ -32,11 +32,13 @@ backend/.prometheus/
 node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/.test-build/
 *.tsbuildinfo
 npm-debug.log*
 
-# webp product photos, source for the future menu seed
-backend/seed/images/
+# the optimized product photos seed the menu and are tracked against backend/seed/images.sha256
+backend/seed/images/*
+!backend/seed/images/optimized/
 frontend/public/assets/menu-optimized/
 
 # editors / os

@@ -2,7 +2,16 @@ import { useState } from "react";
 import { Icon } from "../Icon";
 import { useToast } from "../../stores/toast";
 import { ORDER_STATUS, formatOrderDate, type OrderStatus } from "../../api/orders";
-import { commandVerdict, useEmployeeOrders, useTransitionCommand, useTransitionOrder } from "../../api/employee";
+import {
+  commandVerdict,
+  useDismissCommand,
+  useEmployeeOrders,
+  usePendingCommands,
+  useResumeCommand,
+  useTransitionCommand,
+  useTransitionOrder,
+} from "../../api/employee";
+import { modeChanged, type Intent } from "../../lib/commandIntents";
 import { useAuth } from "../../stores/auth";
 import { formatPrice } from "../../lib/menu";
 
@@ -33,37 +42,74 @@ export function EmployeeOrders() {
   const total = data?.total ?? 0;
   const pageSize = data?.page_size ?? 20;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const direct = useTransitionOrder();
-  const viaCommand = useTransitionCommand();
+  const userId = useAuth((s) => s.user?.id ?? 0);
   const byCommands = useAuth((s) => Boolean(s.user?.transitions_via_commands));
-  const pending = direct.isPending || viaCommand.isPending;
+  const direct = useTransitionOrder();
+  const viaCommand = useTransitionCommand(userId);
+  const resumeCommand = useResumeCommand(userId);
+  const dismissCommand = useDismissCommand(userId);
+  const unresolved = usePendingCommands(userId).data ?? [];
+  const pending = direct.isPending || viaCommand.isPending || resumeCommand.isPending;
   const notify = useToast((s) => s.notify);
+
+  function told(intent: Intent) {
+    const verdict = commandVerdict(intent);
+    notify(`Заказ №${intent.orderId}: ${verdict.text.toLowerCase()}`, verdict.ok ? undefined : "error");
+  }
+
+  // no retry here: the switch decides which way is allowed, and the employee repeats the action on the right one
+  function failed(e: unknown) {
+    if (modeChanged(e)) {
+      useAuth.getState().refresh();
+      notify("Способ смены статуса изменился, повторите действие", "error");
+      return;
+    }
+    notify(e instanceof Error ? e.message : "Не удалось изменить статус", "error");
+  }
 
   function act(orderId: number, from: OrderStatus, to: OrderStatus) {
     if (byCommands) {
-      viaCommand.mutate(
-        { orderId, to_status: to, expected_status: from },
-        {
-          onSuccess: (command) => {
-            const verdict = commandVerdict(command);
-            notify(`Заказ №${orderId}: ${verdict.text.toLowerCase()}`, verdict.ok ? undefined : "error");
-          },
-          onError: (e) => notify(e instanceof Error ? e.message : "Не удалось изменить статус", "error"),
-        },
-      );
+      viaCommand.mutate({ orderId, to_status: to, expected_status: from }, { onSuccess: told, onError: failed });
       return;
     }
     direct.mutate(
       { orderId, to_status: to, expected_status: from },
-      {
-        onSuccess: () => notify(`Заказ №${orderId}: ${ORDER_STATUS[to].label.toLowerCase()}`),
-        onError: (e) => notify(e instanceof Error ? e.message : "Не удалось изменить статус", "error"),
-      },
+      { onSuccess: () => notify(`Заказ №${orderId}: ${ORDER_STATUS[to].label.toLowerCase()}`), onError: failed },
     );
   }
 
   return (
     <div>
+      {unresolved.length > 0 && (
+        <ul className="mb-5 flex flex-col gap-2">
+          {unresolved.map((intent) => (
+            <li
+              key={intent.key}
+              className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-500/40 px-4 py-3 text-sm"
+            >
+              <span>
+                Заказ №{intent.orderId}: «{ORDER_STATUS[intent.to_status as OrderStatus].label}» -{" "}
+                {commandVerdict(intent).text.toLowerCase()}
+              </span>
+              <span className="flex gap-2">
+                <button
+                  onClick={() => resumeCommand.mutate(intent.key, { onSuccess: told, onError: failed })}
+                  disabled={pending}
+                  className="rounded-full bg-primary px-3.5 py-1.5 font-medium text-primary-contrast hover:bg-primary-hover disabled:opacity-50"
+                >
+                  {intent.commandId ? "Обновить" : "Продолжить"}
+                </button>
+                <button
+                  onClick={() => dismissCommand(intent.key)}
+                  className="rounded-full border border-border px-3.5 py-1.5 font-medium text-muted hover:text-text"
+                >
+                  Скрыть
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
       <div className="mb-5 flex flex-wrap gap-2">
         {FILTERS.map((f) => (
           <button

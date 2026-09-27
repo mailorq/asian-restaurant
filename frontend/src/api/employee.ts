@@ -1,6 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiError, api } from "./client";
+import {
+  type Command,
+  type Deps,
+  type Intent,
+  type Store,
+  type Transition,
+  dismiss,
+  pendingIntents,
+  resume,
+  submit,
+} from "../lib/commandIntents";
 import type { Order, OrderStatus, PagedOrders } from "./orders";
 import type { Category } from "../lib/menu";
 
@@ -106,67 +117,79 @@ export function useTransitionOrder() {
 }
 
 // --- order status through operations commands ---------------------------
-export type CommandState = "pending" | "dispatched" | "succeeded" | "rejected" | "timed_out" | "dispatch_failed";
+// storage may be missing or refuse writes; an unresolved action then lives as long as the tab
+const memory = new Map<string, string>();
+const browserStore: Store = {
+  getItem(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return memory.get(key) ?? null;
+    }
+  },
+  setItem(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      memory.set(key, value);
+    }
+  },
+  removeItem(key) {
+    memory.delete(key);
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // nothing was stored there
+    }
+  },
+};
 
-export interface Command {
-  command_id: string;
-  status: CommandState;
-  result_code: string;
-  result_detail: string;
-  deadline_at: string | null;
-  created_at: string;
+const commandDeps: Deps = {
+  send: (t, key) =>
+    api<Command>(`/employee/orders/${t.orderId}/transition-commands`, {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify({ expected_status: t.expected_status, target_status: t.to_status, reason: t.note ?? "" }),
+    }),
+  read: (commandId) => api<Command>(`/employee/commands/${commandId}`),
+  store: browserStore,
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  newKey: () => crypto.randomUUID(),
+  now: () => Date.now(),
+};
+
+export function usePendingCommands(userId: number) {
+  return useQuery({
+    queryKey: ["employee", "pending-commands", userId],
+    queryFn: () => pendingIntents(browserStore, userId),
+  });
 }
 
-const SETTLED: CommandState[] = ["succeeded", "rejected", "timed_out", "dispatch_failed"];
-const REPEATS = 3;
-const WATCH_MS = 20_000;
-
-const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// an answer that leaves the outcome open: nothing arrived, operations was not reached, or the reply was lost
-function outcomeOpen(e: unknown): boolean {
-  return e instanceof ApiError && (e.status === 0 || e.status === 503 || e.status === 504);
-}
-
-// one action is one key: a repeat after an open outcome reuses it, so operations applies the action at most once
-export function useTransitionCommand() {
+function useCommandMutation<V>(userId: number, run: (vars: V) => Promise<Intent>) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (vars: {
-      orderId: number;
-      to_status: OrderStatus;
-      expected_status: OrderStatus;
-      note?: string;
-    }): Promise<Command> => {
-      const key = crypto.randomUUID();
-      const send = () =>
-        api<Command>(`/employee/orders/${vars.orderId}/transition-commands`, {
-          method: "POST",
-          headers: { "Idempotency-Key": key },
-          body: JSON.stringify({
-            expected_status: vars.expected_status,
-            target_status: vars.to_status,
-            reason: vars.note ?? "",
-          }),
-        });
-      let command: Command | null = null;
-      for (let attempt = 0; command === null; attempt++) {
-        try {
-          command = await send();
-        } catch (e) {
-          if (!outcomeOpen(e) || attempt + 1 >= REPEATS) throw e;
-          await pause(1000 * 2 ** attempt);
-        }
-      }
-      const until = Date.now() + WATCH_MS;
-      while (!SETTLED.includes(command.status) && Date.now() < until) {
-        await pause(1000);
-        command = await api<Command>(`/employee/commands/${command.command_id}`);
-      }
-      return command;
+    mutationFn: run,
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["employee", "orders"] });
+      qc.invalidateQueries({ queryKey: ["employee", "pending-commands", userId] });
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: ["employee", "orders"] }),
   });
+}
+
+export function useTransitionCommand(userId: number) {
+  return useCommandMutation(userId, (transition: Transition) => submit(commandDeps, userId, transition));
+}
+
+export function useResumeCommand(userId: number) {
+  return useCommandMutation(userId, (key: string) => resume(commandDeps, userId, key));
+}
+
+export function useDismissCommand(userId: number) {
+  const qc = useQueryClient();
+  return (key: string) => {
+    dismiss(browserStore, userId, key);
+    qc.invalidateQueries({ queryKey: ["employee", "pending-commands", userId] });
+  };
 }
 
 const REJECTIONS: Record<string, string> = {
@@ -177,17 +200,19 @@ const REJECTIONS: Record<string, string> = {
   order_not_found: "Заказ не найден",
 };
 
-export function commandVerdict(command: Command): { text: string; ok: boolean } {
-  switch (command.status) {
+export function commandVerdict(intent: Intent): { text: string; ok: boolean } {
+  switch (intent.state) {
     case "succeeded":
       return { text: "Статус изменен", ok: true };
     case "rejected":
-      return { text: REJECTIONS[command.result_code] ?? "Действие отклонено", ok: false };
+      return { text: REJECTIONS[intent.resultCode ?? ""] ?? "Действие отклонено", ok: false };
     case "timed_out":
     case "dispatch_failed":
-      return { text: "Исход неизвестен, проверьте статус заказа позже", ok: false };
+      return { text: "Исход неизвестен, ждет решения оператора", ok: false };
+    case undefined:
+      return { text: "Исход неизвестен, действие можно продолжить", ok: false };
     default:
-      return { text: "Команда принята, статус обновится в списке", ok: true };
+      return { text: "Команда в пути, статус обновится", ok: true };
   }
 }
 

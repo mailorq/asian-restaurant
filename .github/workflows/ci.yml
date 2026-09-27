@@ -56,13 +56,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-          cache: pip
-          cache-dependency-path: backend/requirements-dev.txt
-      - run: pip install -r requirements-dev.txt
-      - run: ruff check .
-      - run: python manage.py check
-      - run: python manage.py makemigrations --check --dry-run
-      - run: pytest
+      - run: pip install uv==0.12.17
+      - run: uv sync --locked
+      - run: uv run --locked ruff check .
+      - run: uv run --locked python manage.py check
+      - run: uv run --locked python manage.py makemigrations --check --dry-run
+      - run: uv run --locked pytest
 
   # the whole command lifecycle, lease/fencing, expiry and the dispatcher live here; without this
   # job their tests never run and a regression in operations reaches main green
@@ -111,13 +110,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install "../../packages/event_contracts[dev]"
-      - run: pip install -r requirements.txt
-      - run: pip install ".[dev]"
-      - run: ruff check .
-      - run: python manage.py check
-      - run: python manage.py makemigrations --check --dry-run
-      - run: pytest tests/ -q
+      - run: pip install uv==0.12.17
+      - run: uv sync --locked
+      - run: uv run --locked ruff check .
+      - run: uv run --locked python manage.py check
+      - run: uv run --locked python manage.py makemigrations --check --dry-run
+      - run: uv run --locked pytest tests/ -q
 
   contracts:
     runs-on: ubuntu-latest
@@ -129,8 +127,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install ".[dev]"
-      - run: pytest -q
+      - run: pip install uv==0.12.17
+      - run: uv sync --locked
+      - run: uv run --locked pytest -q
 
   security-config:
     # runs from the repo root (no working-directory), so scripts resolve compose files
@@ -156,7 +155,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install pika pytest
+      - run: pip install pika==1.4.4 pytest==9.1.1
       - name: start a clean broker with the dev definitions
         run: |
           set -eu
@@ -285,4 +284,5 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run lint
+      - run: npm test
       - run: npm run build

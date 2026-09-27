@@ -73,11 +73,15 @@ def order_detail(request, order_id: int):
     return order
 
 
-@router.post("/orders/{order_id}/transition", response=OrderOut)
+# a tab opened before an employee was switched either way learns it from this code and reloads the way it changes status
+MODE_CHANGED = "transition_mode_changed"
+
+@router.post("/orders/{order_id}/transition", response={200: OrderOut, 403: RefusalOut})
 @employee_required
 def transition_order(request, order_id: int, data: TransitionIn):
     if request.auth.transitions_via_commands:
-        raise HttpError(403, "Статус заказа меняется командой, прямой переход для вас закрыт")
+        detail = "Статус заказа меняется командой, прямой переход для вас закрыт"
+        return Status(403, {"detail": detail, "code": MODE_CHANGED})
     order = Order.objects.filter(id=order_id).first()
     if order is None:
         raise HttpError(404, "Заказ не найден")
@@ -94,6 +98,7 @@ def transition_order(request, order_id: int, data: TransitionIn):
 COMMAND_ANSWERS = {
     200: CommandOut,
     202: CommandOut,
+    403: RefusalOut,
     429: RefusalOut,
     503: RefusalOut,
     504: RefusalOut,
@@ -150,7 +155,7 @@ def request_transition_command(
     request, response: HttpResponse, order_id: int, data: TransitionCommandIn
 ):
     if not request.auth.transitions_via_commands:
-        raise HttpError(403, "Для вас статус заказа меняется напрямую")
+        return Status(403, {"detail": "Для вас статус заказа меняется напрямую", "code": MODE_CHANGED})
     try:
         key = command_plane.normalized_key(request.headers.get(command_plane.KEY_HEADER))
     except command_plane.InvalidKey as exc:

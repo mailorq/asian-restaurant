@@ -183,7 +183,9 @@ def test_an_employee_not_switched_cannot_send_commands(employee_user, operations
     client = Client()
     client.force_login(employee_user)
 
-    assert _post(client).status_code == 403
+    response = _post(client)
+
+    assert (response.status_code, response.json()["code"]) == (403, "transition_mode_changed")
     assert operations.seen == []
 
 
@@ -210,7 +212,7 @@ def test_the_direct_transition_is_closed_to_a_switched_employee(panel, order):
         content_type="application/json",
     )
 
-    assert response.status_code == 403
+    assert (response.status_code, response.json()["code"]) == (403, "transition_mode_changed")
     order.refresh_from_db()
     assert order.status == "created"
 
