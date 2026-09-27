@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# a restore rehearsal on disposable stands: a released production render with a seeded catalog, a customer order and its
-# projection is backed up (both databases with pg_dump, the media volume with tar), then restored into a second, empty
-# project the way DEPLOY.md describes it, released there and checked: the same rows, the same media bytes served by nginx,
-# migrations at head, and a fresh snapshot run that operations reconciles without a discrepancy
+# a restore rehearsal on disposable stands: a released production render with a seeded catalog and a projected order is
+# backed up in the maintenance window DEPLOY.md describes, while a write is attempted between the two database dumps, then
+# restored into a second, empty project and checked: the content of every table and sequence of both databases and the
+# bytes of every media file, the photo nginx serves, and a fresh snapshot run that operations reconciles
 # reads only tracked config and throwaway files outside the checkout, and tears down only its own two projects
 set -euo pipefail
 
@@ -86,22 +86,22 @@ release() {
   dc up --exit-code-from operations-migrate operations-migrate >>"$WORK/$PROJ-migrate.log" 2>&1 || { tail -20 "$WORK/$PROJ-migrate.log"; fail "$PROJ: operations migrations failed"; }
   dc up -d >"$WORK/$PROJ-up.log" 2>&1 || { tail -30 "$WORK/$PROJ-up.log"; fail "$PROJ: the runtime did not start"; }
 }
-# what has to come back: rows on both sides and the bytes of every media file
-state() {
-  dc exec -T backend python manage.py shell -c "
-import json
-from django.contrib.auth import get_user_model
-from menu.models import Product
-from orders.models import Order, OrderItem, OrderStatusHistory
-print(json.dumps({'products': Product.objects.count(), 'stock': sum(Product.objects.values_list('stock_quantity', flat=True)),
-                  'users': get_user_model().objects.count(), 'orders': Order.objects.count(), 'items': OrderItem.objects.count(),
-                  'history': OrderStatusHistory.objects.count()}, sort_keys=True))" | tail -1
-  dc exec -T operations-api python manage.py shell -c "
-import json
-from operations.models import CustomerProjection, InboxEvent, InventoryProjection, OperationOrder
-print(json.dumps({'orders': OperationOrder.objects.count(), 'customers': CustomerProjection.objects.count(),
-                  'products': InventoryProjection.objects.count(), 'inbox': InboxEvent.objects.count()}, sort_keys=True))" | tail -1
-  docker run --rm -v "${PROJ}_media:/media:ro" "$PY_IMAGE" python -c "
+# the canonical content of every table and the value of every sequence, read by the bootstrap superuser
+cat > "$WORK/content.sql" <<'SQL'
+select c.relname || ' ' || (xpath('/row/h/text()', query_to_xml(format(
+         'select md5(coalesce(string_agg(t::text, E''\n'' order by t::text), '''')) as h from public.%I t', c.relname),
+         false, true, '')))[1]::text
+  from pg_class c join pg_namespace n on n.oid = c.relnamespace
+ where n.nspname = 'public' and c.relkind = 'r'
+ order by c.relname;
+select 'sequence ' || sequencename || ' ' || coalesce(last_value::text, 'unused')
+  from pg_sequences where schemaname = 'public' order by sequencename;
+SQL
+content() {  # content <database service> <user> <database>
+  dc exec -T "$1" psql -X -A -t -q -U "$2" -d "$3" <"$WORK/content.sql"
+}
+media() {
+  dc run --rm --no-deps -T --entrypoint python media-init -c "
 import hashlib, pathlib
 for f in sorted(p for p in pathlib.Path('/media').rglob('*') if p.is_file()):
     print(f.relative_to('/media'), hashlib.sha256(f.read_bytes()).hexdigest())"
@@ -113,6 +113,47 @@ c = http.client.HTTPConnection('frontend', 8080, timeout=10)
 c.request('GET', sys.argv[1], headers={'Host': 'smoke.invalid', 'X-Forwarded-Proto': 'https'})
 r = c.getresponse()
 print(r.status, hashlib.sha256(r.read()).hexdigest())" "$1"
+}
+# nothing is on its way to a database: no unpublished outbox row, no command without its outcome, no message waiting in a
+# consumed or retry queue; dead letter queues are parked and change nothing
+delivered() {
+  local storefront operations queued
+  storefront="$(dc exec -T relay python manage.py shell -c "from orders.models import OrderOutbox as O; print(O.objects.filter(status='pending').count())" | tail -1)"
+  operations="$(dc exec -T operations-consumer python manage.py shell -c "from operations.models import OperationCommand as C, OperationsOutbox as O; print(O.objects.filter(status='pending').count() + C.objects.filter(status__in=['pending', 'dispatched']).count())" | tail -1)"
+  queued="$(for vhost in storefront operations; do dc exec -T -u rabbitmq rabbitmq rabbitmqctl -q --no-table-headers list_queues -p "$vhost" name messages consumers; done \
+    | awk '($3 > 0 || $1 ~ /\.retry$/) && $2 > 0' | wc -l)"
+  [ "$storefront" = 0 ] && [ "$operations" = 0 ] && [ "$queued" = 0 ]
+}
+window() {
+  dc stop frontend backend operations-api >/dev/null 2>&1
+  until_ok 300 delivered || fail "the background processes never delivered what was in flight"
+  dc stop relay commands-consumer commands-relay operations-consumer operations-bridge >/dev/null 2>&1
+}
+# the application confirming the order; while the window is closed there is nothing left to do it
+write_between_dumps() {
+  dc exec -T backend python manage.py shell -c "
+from orders import service
+from orders.models import Order
+service.transition(Order.objects.get(idempotency_key='restore-order'), 'confirmed', expected_status='created', note='between the dumps')" >/dev/null 2>&1
+}
+confirmed_in_operations() {
+  dc exec -T operations-consumer python manage.py shell -c "import sys; from operations.models import OperationOrder; sys.exit(0 if OperationOrder.objects.filter(status='confirmed').exists() else 1)"
+}
+# a copy taken without writes leaves every projection exactly where its source stands; reconcile takes a projection
+# ahead of a snapshot for a later live event, so a copy with a write between its dumps passes it and only this catches it
+sources() {
+  dc exec -T backend python manage.py shell -c "
+from django.db.models import Count
+from menu.models import Product
+from orders.models import Order
+for o in Order.objects.annotate(v=Count('history')).order_by('id'): print('order', o.id, o.status, o.v)
+for p in Product.objects.order_by('code'): print('product', p.code, p.stock_quantity, p.version)" | grep -E '^(order|product) '
+}
+projections() {
+  dc exec -T operations-api python manage.py shell -c "
+from operations.models import InventoryProjection, OperationOrder
+for o in OperationOrder.objects.order_by('source_order_id'): print('order', o.source_order_id, o.status, o.aggregate_version)
+for p in InventoryProjection.objects.order_by('product_code'): print('product', p.product_code, p.stock_quantity, p.aggregate_version)" | grep -E '^(order|product) '
 }
 
 echo "== the source stand: released, seeded, projected =="
@@ -138,24 +179,24 @@ OrderStatusHistory.objects.create(order=order, from_status='', to_status='create
 accounts_service.emit_customer_created(customer)
 order_service.emit_order_state(order)
 " >/dev/null
-# the seed photos are not tracked, so the stand writes a media file of its own that has to come back byte for byte
-dc exec -T backend sh -c 'mkdir -p /app/media/products && head -c 65536 /dev/urandom > /app/media/products/restore-probe.bin'
 projected() { dc exec -T operations-api python manage.py shell -c "import sys; from operations.models import OperationOrder; sys.exit(0 if OperationOrder.objects.exists() else 1)"; }
 until_ok 120 projected || fail "the order never reached the operations projection"
-# the backup is compared with this state, so nothing may still be on its way: the outbox is drained and operations took the last event
-drained() { dc exec -T backend python manage.py shell -c "import sys; from orders.models import OrderOutbox; sys.exit(0 if not OrderOutbox.objects.exclude(status='published').exists() else 1)"; }
-inbox() { dc exec -T operations-api python manage.py shell -c "from operations.models import InboxEvent; print(InboxEvent.objects.count())" | tail -1; }
-until_ok 120 drained || fail "the storefront outbox never drained"
-quiet() { local seen; seen="$(inbox)"; sleep 5; [ "$seen" = "$(inbox)" ]; }
-until_ok 120 quiet || fail "operations kept taking events"
-before="$(state)"
-photo=/media/products/restore-probe.bin
-echo "OK the source holds $(head -1 <<<"$before") and $(sed -n 2p <<<"$before"), $(grep -c '^products/' <<<"$before") media files"
+echo "OK the source holds the seeded catalog and an order projected into operations"
 
-echo "== backup, as a scheduled job would take it from the running stand =="
+echo "== backup in the maintenance window, with a write attempted between the dumps =="
+window
+storefront_before="$(content db "$SF_BOOT" storefront)"
 dc exec -T db pg_dump -U "$SF_BOOT" -d storefront -Fc >"$WORK/storefront.dump"
+if write_between_dumps; then
+  echo "a write landed between the dumps"
+  until_ok 120 confirmed_in_operations || true
+else
+  echo "OK the write attempted between the dumps found no process to make it"
+fi
+operations_before="$(content operations-db "$OPS_BOOT" operations)"
 dc exec -T operations-db pg_dump -U "$OPS_BOOT" -d operations -Fc >"$WORK/operations.dump"
-docker run --rm -v "${PROJ}_media:/media:ro" "$PY_IMAGE" tar -C /media -cf - . >"$WORK/media.tar"
+media_before="$(media)"
+dc run --rm --no-deps -T --entrypoint tar media-init -cf - -C /media . >"$WORK/media.tar"
 echo "OK storefront $(wc -c <"$WORK/storefront.dump") bytes, operations $(wc -c <"$WORK/operations.dump") bytes, media $(wc -c <"$WORK/media.tar") bytes"
 dc --profile provision down -v --remove-orphans >/dev/null 2>&1
 
@@ -171,20 +212,33 @@ dc exec -T db pg_restore -U "$SF_BOOT" -d storefront --no-owner --role=storefron
   || fail "the storefront dump did not restore"
 dc exec -T operations-db pg_restore -U "$OPS_BOOT" -d operations --no-owner --role=operations_migrator --exit-on-error <"$WORK/operations.dump" \
   || fail "the operations dump did not restore"
-dc create media-init >/dev/null 2>&1
-docker run --rm -i -v "${PROJ}_media:/media" "$PY_IMAGE" tar -C /media -xf - <"$WORK/media.tar"
+dc run --rm --no-deps -T --entrypoint tar media-init -xf - -C /media --no-same-owner <"$WORK/media.tar" \
+  || fail "the media archive did not unpack"
 dc run --rm --no-deps media-init >/dev/null 2>&1 || fail "media-init did not hand the restored media to the runtime user"
+for side in storefront operations media; do
+  case "$side" in
+    storefront) now="$(content db "$SF_BOOT" storefront)" was="$storefront_before" ;;
+    operations) now="$(content operations-db "$OPS_BOOT" operations)" was="$operations_before" ;;
+    media) now="$(media)" was="$media_before" ;;
+  esac
+  [ "$now" = "$was" ] || { diff <(echo "$was") <(echo "$now") || true; fail "the restored $side differs from its backup"; }
+done
+echo "OK every table and sequence of both databases holds the same content, $(grep -c . <<<"$media_before") media files the same bytes"
 release
 echo "OK restored and released: the migration jobs found both schemas at head"
 
-echo "== what came back =="
+echo "== what came back works =="
 healthy() { [ "$(served /api/health | cut -d' ' -f1)" = 200 ]; }
 until_ok 120 healthy || fail "the restored stand does not answer through nginx"
-after="$(state)"
-[ "$before" = "$after" ] || { diff <(echo "$before") <(echo "$after") || true; fail "the restored stand differs from the source"; }
-expected="$(grep -m1 "^${photo#/media/} " <<<"$before" | cut -d' ' -f2)"
-[ "$(served "$photo")" = "200 $expected" ] || fail "nginx does not serve $photo as it was backed up"
-echo "OK the same rows on both sides and the same media bytes, and nginx serves $photo as it was"
+read -r photo expected <<<"$(grep -m1 '^products/' <<<"$media_before")"
+[ "$(served "/media/$photo")" = "200 $expected" ] || fail "nginx does not serve /media/$photo as it was backed up"
+echo "OK nginx serves /media/$photo as it was backed up"
+from_sources="$(sources)" from_projections="$(projections)"
+[ "$from_sources" = "$from_projections" ] || {
+  diff <(echo "$from_sources") <(echo "$from_projections") || true
+  fail "the restored projections do not stand where their sources stand"
+}
+echo "OK $(grep -c . <<<"$from_sources") orders and products stand in operations exactly where the storefront has them"
 dc exec -T backend python manage.py emit_source_state --snapshot >"$WORK/snapshot.log"
 run="$(grep -o 'snapshot run [0-9a-f]*' "$WORK/snapshot.log" | cut -d' ' -f3)"
 [ -n "$run" ] || fail "no snapshot run was emitted"
