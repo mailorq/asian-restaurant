@@ -213,6 +213,10 @@ dc exec backend python manage.py seed_initial_stock --confirm --quantity 50
 Существующие товары, их цены, активность, остатки и загруженные изображения он не меняет, поэтому
 повторный запуск безопасен, например чтобы добавить новые позиции из `backend/seed/products_data.py`.
 Новая позиция появляется с нулевым остатком и недоступна в меню, пока сотрудник не задаст остаток.
+Фото товаров лежат в репозитории (`backend/seed/images/optimized`) вместе с их sha256 в
+`backend/seed/images.sha256`. Если какого-то фото нет или оно не совпадает с манифестом, `seed_menu`
+отказывает, ничего не создав. После замены фото манифест пересчитывается:
+`cd backend/seed/images/optimized && sha256sum *.webp > ../../images.sha256`.
 
 `seed_initial_stock` перезаписывает остаток каждого товара тем же путем, что и корректировка
 сотрудника: с новой версией, записью в журнал остатков и событием для Operations. Команда требует
@@ -339,17 +343,45 @@ dc exec backend python manage.py transitions_via_commands +79990000001 --off
 ## Резервная копия и восстановление
 
 Копия состоит из трех частей: `pg_dump -Fc` обеих баз от bootstrap-пользователя и архива тома `media`.
+Базы разные, и один дамп не видит транзакций другого. Если между двумя дампами приложение изменит
+заказ, копии окажутся из разных моментов: storefront со старым статусом, Operations с новой проекцией
+и завершенной командой. `reconcile` этого не заметит: проекцию, опередившую снимок, он считает следом
+более позднего живого события. Поэтому копия снимается только в окне обслуживания, без записи в обе базы:
+
+```bash
+# 1. закрыть вход: витрина, панель, админка и api команд перестают принимать запросы
+dc stop frontend backend operations-api
+# 2. дождаться, пока фоновые процессы доставят то, что уже в пути: все значения ниже равны 0
+dc exec relay python manage.py shell -c "from orders.models import OrderOutbox as O; print(O.objects.filter(status='pending').count())"
+dc exec operations-consumer python manage.py shell -c "from operations.models import OperationCommand as C, OperationsOutbox as O; print(O.objects.filter(status='pending').count(), C.objects.filter(status__in=['pending', 'dispatched']).count())"
+# очереди с потребителями и очереди .retry пусты; очереди .dlq только хранят отложенное и базы не меняют
+dc exec -u rabbitmq rabbitmq rabbitmqctl -q list_queues -p storefront name messages consumers
+dc exec -u rabbitmq rabbitmq rabbitmqctl -q list_queues -p operations name messages consumers
+# 3. остановить фоновые процессы и снять копию
+dc stop relay commands-consumer commands-relay operations-consumer operations-bridge
+dc exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > storefront.dump
+dc exec -T operations-db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > operations.dump
+dc run --rm --no-deps -T --entrypoint tar media-init -cf - -C /media . > media.tar
+# 4. открыть снова
+dc up -d
+```
+
+Копия с работающего стенда без окна требует отдельного протокола, которого сейчас нет.
+
 Восстановление на пустой установке идет в таком порядке: поднять `db` и `operations-db`, выдать роли
 (`storefront-db-provision`, `operations-db-provision`), затем `pg_restore --no-owner --role=<side>_migrator`,
-чтобы владельцем объектов стал migrator, а runtime-роль получила свои права. Потом распаковать `media`
-в том и запустить `media-init`, после чего выполнить обычный релиз. Брокер не копируется: сообщения в
-полете теряются, поэтому после восстановления снимок `emit_source_state --snapshot` и `reconcile` в
-Operations показывают, что проекции сходятся.
+чтобы владельцем объектов стал migrator, а runtime-роль получила свои права. Потом распаковать архив в
+том (`dc run --rm --no-deps -T --entrypoint tar media-init -xf - -C /media --no-same-owner < media.tar`),
+запустить `media-init` и выполнить обычный релиз. Брокер не копируется. В окне в нем ничего не было в
+пути, а снимок `emit_source_state --snapshot` и `reconcile` в Operations после восстановления
+показывают, что проекции сходятся.
 
-`scripts/restore_rehearsal.sh` проходит этот путь на двух одноразовых стендах: сравнивает строки обеих баз
-и байты `media` до и после, проверяет, что nginx отдает восстановленное фото, и сверяет новый снимок.
-Это репетиция на локальном стенде. Расписание, шифрование, срок хранения и хранилище вне хоста выбираются
-вместе с площадкой.
+`scripts/restore_rehearsal.sh` проходит этот путь на двух одноразовых стендах. Между двумя дампами
+репетиция пытается подтвердить заказ через приложение, и в окне эту запись сделать некому. После
+восстановления она сравнивает с копией канонический хеш строк каждой таблицы обеих баз, значения
+последовательностей и байты файлов `media`, проверяет, что каждый заказ и товар стоит в проекциях
+Operations там же, где в storefront, что nginx отдает восстановленное фото, и сверяет новый снимок. Это репетиция на локальном стенде. Расписание, шифрование, срок хранения и
+хранилище вне хоста выбираются вместе с площадкой.
 
 ## Сетевая модель
 
@@ -428,16 +460,19 @@ geocoder. У остальных сервисов маршрута из сете�
 
 ## Образы и воспроизводимость сборки
 
-Это три разных свойства, и сейчас выполнено только первое.
+Это три разных свойства, и сейчас выполнены первые два.
 
-1. **Базовые образы закреплены.** Каждый `FROM`, `image:`, образ в командах `docker run`, `docker create` и
-   `docker pull` из CI и smoke-скриптов и образ синтаксиса Dockerfile (`# syntax=`) указаны как `тег@sha256:...`.
+1. **Базовые образы закреплены.** Каждый `FROM`, `COPY --from=`, `image:`, образ в командах `docker run`,
+   `docker create` и `docker pull` из CI и smoke-скриптов и образ синтаксиса Dockerfile (`# syntax=`) указаны как
+   `тег@sha256:...`.
    Повторный `pull` тега не подменит базу. Гейт `scripts/check_prod_config.sh` падает на ссылке без digest, в том
    числе на образе, который больше нигде не упоминается, и на теге, закрепленном в разных местах разными digest.
-2. **Зависимости приложения разрешаются во время сборки.** Frontend ставится через `npm ci` по `package-lock.json`
-   с хешами целостности. В Python-образах `requirements.txt` закрепляет только прямые зависимости: транзитивные
-   и сам `pip` (`pip install --upgrade pip`) берутся последними на момент сборки, хешей нет. Пакеты `apt-get`
-   в backend приходят из текущего состояния репозиториев Debian. Пересборка того же коммита может дать другой образ.
+2. **Зависимости приложения закреплены lock-файлами.** Frontend ставится через `npm ci` по `package-lock.json`
+   с хешами целостности. У каждого Python-пакета (backend, operations, event_contracts) зависимости задает только
+   `pyproject.toml`, а `uv.lock` рядом закрепляет их все, включая транзитивные, с хешами. Образы и CI ставят их
+   через `uv sync --locked`, который отказывает, если lock отстал от `pyproject.toml`. Вне lock остаются пакеты
+   `apt-get` в backend (текущее состояние репозиториев Debian) и `setuptools`, которым собирается event_contracts
+   (версия закреплена, хеша нет).
 3. **Развертывается новая сборка, а не проверенный артефакт.** `dc up -d` собирает образы приложения на хосте из
    рабочей копии. Чтобы на хост попал ровно тот образ, который прошел CI и smoke, его собирают один раз, публикуют
    в реестр и указывают в compose по digest образа приложения. Реестр выбирается вместе с площадкой, до этого
@@ -454,3 +489,6 @@ bash scripts/check_prod_config.sh
 ```
 
 Затем полный CI и smoke: новый базовый образ меняет то, на чем собираются и работают все процессы.
+
+Изменение Python-зависимости: поправить версию в `pyproject.toml` пакета, выполнить в его каталоге `uv lock`
+(`uv lock --upgrade-package <имя>` для обновления одной транзитивной) и закоммитить оба файла вместе.

@@ -1,5 +1,7 @@
+import hashlib
 import threading
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -17,17 +19,58 @@ from tests.concurrency import Writer, queue_behind
 
 pytestmark = pytest.mark.django_db
 
+TRACKED_PHOTOS = seed_menu.SOURCE_IMAGES
+TRACKED_MANIFEST = getattr(seed_menu, "MANIFEST", seed_menu.SEED_DIR / "images.sha256")
+
 
 @pytest.fixture(autouse=True)
 def _media(settings, tmp_path, monkeypatch):
     # the real images weigh megabytes and /tmp is a small tmpfs; the command only copies them
     source = tmp_path / "source"
     source.mkdir()
+    lines = []
     for row in _load_products():
-        (source / row["image"].rsplit("/", 1)[-1]).write_bytes(b"image")
+        name = row["image"].rsplit("/", 1)[-1]
+        (source / name).write_bytes(b"image")
+        lines.append(f"{hashlib.sha256(b'image').hexdigest()}  {name}")
+    (tmp_path / "images.sha256").write_text("\n".join(lines) + "\n", encoding="utf-8")
     monkeypatch.setattr(seed_menu, "SOURCE_IMAGES", source)
+    monkeypatch.setattr(seed_menu, "MANIFEST", tmp_path / "images.sha256", raising=False)
     settings.MEDIA_ROOT = tmp_path / "media"
     return tmp_path / "media"
+
+
+def _photo(index=0) -> Path:
+    return seed_menu.SOURCE_IMAGES / _load_products()[index]["image"].rsplit("/", 1)[-1]
+
+
+def test_the_tracked_photo_set_is_complete_and_matches_its_manifest():
+    # a fresh clone has to seed the same photos, so they live in git and their manifest says which bytes they are
+    listed = dict(
+        reversed(line.split()) for line in TRACKED_MANIFEST.read_text(encoding="utf-8").splitlines()
+    )
+    for row in _load_products():
+        name = row["image"].rsplit("/", 1)[-1]
+        digest = hashlib.sha256((TRACKED_PHOTOS / name).read_bytes()).hexdigest()
+        assert digest == listed[name], name
+
+
+def test_a_missing_photo_stops_the_seed_before_it_writes_anything():
+    _photo(3).unlink()
+
+    with pytest.raises(CommandError, match="фото"):
+        call_command("seed_menu")
+
+    assert Product.objects.count() == 0
+
+
+def test_a_photo_that_differs_from_the_manifest_stops_the_seed():
+    _photo(5).write_bytes(b"another image")
+
+    with pytest.raises(CommandError, match="фото"):
+        call_command("seed_menu")
+
+    assert Product.objects.count() == 0
 
 
 def _state():

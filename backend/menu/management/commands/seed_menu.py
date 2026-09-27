@@ -1,9 +1,10 @@
+import hashlib
 import importlib.util
 import shutil
 from pathlib import Path
 
 from django.conf import settings
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from menu import inventory
@@ -11,6 +12,8 @@ from menu.models import Ingredient, Product
 
 SEED_DIR = Path(settings.BASE_DIR) / "seed"
 SOURCE_IMAGES = SEED_DIR / "images" / "optimized"
+# the photos are tracked with their sha256, so a missing or partial set is refused before anything is written
+MANIFEST = SEED_DIR / "images.sha256"
 
 
 def _load_products() -> list[dict]:
@@ -19,6 +22,22 @@ def _load_products() -> list[dict]:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.PRODUCTS_DATA
+
+
+def _verify_photos(rows: list[dict]) -> None:
+    listed = dict(
+        reversed(line.split()) for line in MANIFEST.read_text(encoding="utf-8").splitlines() if line
+    )
+    problems = []
+    for row in rows:
+        name = Path(row["image"]).name
+        source = SOURCE_IMAGES / name
+        if not source.is_file():
+            problems.append(f"{name} нет")
+        elif hashlib.sha256(source.read_bytes()).hexdigest() != listed.get(name):
+            problems.append(f"{name} не совпадает с {MANIFEST.name}")
+    if problems:
+        raise CommandError("фото меню неполные: " + ", ".join(problems))
 
 
 def _split_allergens(description: str) -> tuple[str, str]:
@@ -43,12 +62,14 @@ class Command(BaseCommand):
         media_products = Path(settings.MEDIA_ROOT) / "products"
         media_products.mkdir(parents=True, exist_ok=True)
         created = kept = 0
+        rows = _load_products()
+        _verify_photos(rows)
 
-        for row in _load_products():
+        for row in rows:
             basename = Path(row["image"]).name
             code = Path(basename).stem  # dish_1, drink_4, dessert_2
             source, target = SOURCE_IMAGES / basename, media_products / basename
-            if source.exists() and not target.exists():
+            if not target.exists():
                 shutil.copy2(source, target)
 
             description, allergens = _split_allergens(row["description"])
