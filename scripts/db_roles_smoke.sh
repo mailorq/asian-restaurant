@@ -61,9 +61,11 @@ EOF
 
 # catalog query as the bootstrap superuser, over the server's own socket
 catalog() { dc exec -T "$1" psql -X -A -t -q -U "$2" -d "$3" -c "$4"; }
-# a client on the project network, authenticating with a password like the application does
+# a client on the database's own network, authenticating with a password like the application does
 client() {  # client <password> <host> <user> <db> <sql>
-  PGPASSWORD="$1" docker run --rm --network "${PROJ}_default" -e PGPASSWORD "$PG_IMAGE" \
+  local network=storefront
+  [ "$2" = operations-db ] && network=operations
+  PGPASSWORD="$1" docker run --rm --network "${PROJ}_$network" -e PGPASSWORD "$PG_IMAGE" \
     psql -X -q -h "$2" -U "$3" -d "$4" -v ON_ERROR_STOP=1 -c '\set VERBOSITY verbose' -c "$5" 2>&1
 }
 wait_ready() {
@@ -82,7 +84,7 @@ echo "OK $legacy storefront tables owned by the bootstrap superuser"
 
 echo "== an older release still connected as the bootstrap superuser: provisioning refuses and changes nothing =="
 # an idle connection, like one an old process keeps in its pool
-PGPASSWORD="$SF_BOOT_PW" docker run -d --name "${PROJ}_stale" --network "${PROJ}_default" -e PGPASSWORD "$PG_IMAGE" \
+PGPASSWORD="$SF_BOOT_PW" docker run -d --name "${PROJ}_stale" --network "${PROJ}_storefront" -e PGPASSWORD "$PG_IMAGE" \
   sh -c "sleep 600 | psql -h db -U $SF_BOOT -d storefront" >/dev/null
 sleep 4
 if dc up --exit-code-from storefront-migrate storefront-migrate >/dev/null 2>&1; then

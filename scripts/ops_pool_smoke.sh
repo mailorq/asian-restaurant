@@ -117,7 +117,8 @@ else:
     print(sum(float(line.split()[-1]) for line in metrics.splitlines()
               if line.startswith("operations_db_pool_exhausted_total")))
 PY
-client() { TOKEN="${TOKEN:-}" docker run --rm --network "${PROJ}_default" -e TOKEN -v "$WORK/load.py:/load.py:ro" "$PY_IMAGE" python /load.py "$@"; }
+# where the identity side reaches the api from
+client() { TOKEN="${TOKEN:-}" docker run --rm --network "${PROJ}_identity" -e TOKEN -v "$WORK/load.py:/load.py:ro" "$PY_IMAGE" python /load.py "$@"; }
 
 echo "== production stack with an operations pool of one =="
 dc up -d --build backend operations-api >"$WORK/up.log" 2>&1 || { tail -30 "$WORK/up.log"; fail "the stack did not start"; }

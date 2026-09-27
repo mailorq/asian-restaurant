@@ -6,6 +6,8 @@ services:
       STOREFRONT_DSN_FOR_ISOLATION: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@db:5432/${POSTGRES_DB}
     volumes:
       - ./services/order_operations:/app
+    # the isolation test reaches the storefront database to prove the operations credentials are refused there
+    networks: [storefront]
     depends_on:
       db:
         condition: service_healthy

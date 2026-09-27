@@ -6,7 +6,7 @@
 set -euo pipefail
 
 PROJ="${SMOKE_PROJECT:-ar_prodsmoke_$(date +%s)_$$}"
-# the image media-init pins; this test only needs a python that can reach the project network
+# the image media-init pins; this test only needs a python that can reach the broker
 PY_IMAGE=python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0
 WORK="$(mktemp -d)"
 REPO="$PWD"
@@ -88,13 +88,16 @@ topic="$(q list_user_topic_permissions operations_commands)"
 echo "OK commands exchange, operations_commands limited to publishing orders.transition.requested"
 
 echo "== accounts connect, the owner declares the command topology, the publisher stays confined =="
-docker run --rm --network "${PROJ}_default" \
+# the broker network has no route out, so the client packages are fetched beforehand by a container that has one
+docker run --rm -v "$WORK/wheels:/wheels" "$PY_IMAGE" \
+  pip download -q --disable-pip-version-check -d /wheels pika==1.4.4 pytest==9.1.1
+docker run --rm --network "${PROJ}_broker_admin" \
   -e RABBITMQ_ADMIN_USER -e RABBITMQ_ADMIN_PASSWORD -e STOREFRONT_MQ_PASSWORD -e OPERATIONS_MQ_PASSWORD \
   -e BRIDGE_MQ_PASSWORD -e OPERATIONS_COMMANDS_MQ_PASSWORD -e REQUIRE_COMMAND_PERMISSION_TESTS=1 \
   -v "$REPO/backend/orders/command_messaging.py:/smoke/command_messaging.py:ro" \
   -v "$REPO/services/order_operations/tests/test_command_permissions.py:/smoke/test_command_permissions.py:ro" \
-  -w /smoke "$PY_IMAGE" sh -euc '
-    pip install -q --disable-pip-version-check --root-user-action=ignore pika==1.4.4 pytest==9.1.1
+  -v "$WORK/wheels:/wheels:ro" -w /smoke "$PY_IMAGE" sh -euc '
+    pip install -q --disable-pip-version-check --root-user-action=ignore --no-index --find-links /wheels pika==1.4.4 pytest==9.1.1
     python - <<"PY"
 import os
 import urllib.request
