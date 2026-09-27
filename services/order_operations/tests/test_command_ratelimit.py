@@ -5,6 +5,7 @@ import pytest
 import redis
 from django.conf import settings
 from django.db import connection
+from limiter_reset import command_limiter  # noqa: F401
 
 from operations import ratelimit
 from operations.commands import CommandConflict, create_transition_command

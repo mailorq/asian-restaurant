@@ -1,3 +1,5 @@
+"""the limiter reset for the modules that create commands; the broker permission test must run without django or redis"""
+
 import pytest
 import redis
 from django.conf import settings

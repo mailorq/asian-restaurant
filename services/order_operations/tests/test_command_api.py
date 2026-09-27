@@ -6,6 +6,7 @@ import jwt as pyjwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from django.test import Client
+from limiter_reset import command_limiter  # noqa: F401
 
 from operations import auth
 from operations.models import EmployeeAuthorization, OperationCommand

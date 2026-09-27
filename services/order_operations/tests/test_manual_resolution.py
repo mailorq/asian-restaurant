@@ -4,6 +4,7 @@ import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from event_contracts import OrderTransitionSucceededData
+from limiter_reset import command_limiter  # noqa: F401
 
 from operations import commands
 from operations.commands import CommandNotResolvable, create_transition_command, resolve_manually

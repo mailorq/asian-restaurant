@@ -88,9 +88,11 @@ topic="$(q list_user_topic_permissions operations_commands)"
 echo "OK commands exchange, operations_commands limited to publishing orders.transition.requested"
 
 echo "== accounts connect, the owner declares the command topology, the publisher stays confined =="
-# the broker network has no route out, so the client packages are fetched beforehand by a container that has one
-docker run --rm -v "$WORK/wheels:/wheels" "$PY_IMAGE" \
-  pip download -q --disable-pip-version-check -d /wheels pika==1.4.4 pytest==9.1.1
+# the broker network has no route out, so the client packages are fetched beforehand by a container that has one; it
+# writes as the invoking user, or the cleanup on a linux runner cannot remove files the docker daemon made as root
+mkdir "$WORK/wheels"
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$WORK/wheels:/wheels" "$PY_IMAGE" \
+  pip download -q --disable-pip-version-check --no-cache-dir -d /wheels pika==1.4.4 pytest==9.1.1
 docker run --rm --network "${PROJ}_broker_admin" \
   -e RABBITMQ_ADMIN_USER -e RABBITMQ_ADMIN_PASSWORD -e STOREFRONT_MQ_PASSWORD -e OPERATIONS_MQ_PASSWORD \
   -e BRIDGE_MQ_PASSWORD -e OPERATIONS_COMMANDS_MQ_PASSWORD -e REQUIRE_COMMAND_PERMISSION_TESTS=1 \

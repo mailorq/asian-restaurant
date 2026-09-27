@@ -13,6 +13,7 @@ from io import StringIO
 
 import pytest
 from django.conf import settings
+from limiter_reset import command_limiter  # noqa: F401
 
 MARKER = "SENSITIVE_MARKER"
 # the value carries the very delimiters a redaction would use as a boundary

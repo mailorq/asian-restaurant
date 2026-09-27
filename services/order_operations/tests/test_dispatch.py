@@ -8,6 +8,7 @@ from event_contracts import (
     EVENT_ORDER_TRANSITION_SUCCEEDED,
     parse_event,
 )
+from limiter_reset import command_limiter  # noqa: F401
 
 from operations import dispatch
 from operations.commands import OutcomeMismatch, create_transition_command

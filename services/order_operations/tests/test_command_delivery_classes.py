@@ -7,6 +7,7 @@ left two of them retrying forever with the command pending and nothing to act on
 """
 
 import pytest
+from limiter_reset import command_limiter  # noqa: F401
 from pika.exceptions import AMQPConnectionError, ChannelClosedByBroker, UnroutableError
 
 from operations import commands

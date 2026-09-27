@@ -8,6 +8,7 @@ pydantic message as input_value. that string was going into OperationsOutbox.las
 import json
 
 import pytest
+from limiter_reset import command_limiter  # noqa: F401
 from pika.exceptions import ChannelClosedByBroker, UnroutableError
 
 from operations import commands

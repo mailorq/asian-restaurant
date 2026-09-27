@@ -4,6 +4,7 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 from event_contracts import OrderTransitionRejectedData, OrderTransitionSucceededData
+from limiter_reset import command_limiter  # noqa: F401
 from pydantic import ValidationError
 
 from operations import commands

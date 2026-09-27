@@ -1,6 +1,7 @@
 import pytest
 from django.core.management.base import CommandError
 from event_contracts import OrderTransitionSucceededData, parse_event
+from limiter_reset import command_limiter  # noqa: F401
 from pika.exceptions import AMQPConnectionError, ChannelClosedByBroker, UnroutableError
 
 from operations import commands
