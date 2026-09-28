@@ -44,8 +44,9 @@ flowchart TB
 Storefront - это `backend` (API, админка и BFF панели сотрудника) и фоновые процессы `relay` и
 `commands-consumer`. Operations - это `operations-api` и процессы `commands-relay`, `operations-bridge` и
 `operations-consumer`. Базы друг друга сервисы не читают: storefront вызывает Operations по HTTP, остальное идет
-через RabbitMQ, где у каждого сервиса свой vhost. Источник истины для заказов и склада - база storefront, брокер
-только переносит сообщения из outbox к потребителям.
+через RabbitMQ, где у каждого сервиса свой vhost. Из Operations в vhost `storefront` ходят только
+`commands-relay` и `operations-bridge`, каждый со своими ограниченными правами. Источник истины для заказов и
+склада - база storefront, брокер только переносит сообщения из outbox к потребителям.
 
 **События**, от storefront к Operations:
 
@@ -174,7 +175,7 @@ cd packages/event_contracts && uv sync --locked && uv run --locked pytest -q && 
 docker compose exec backend sh -c 'DATABASE_URL="postgres://$POSTGRES_USER:$POSTGRES_PASSWORD@db:5432/$POSTGRES_DB" pytest'
 
 # Operations в отдельном проекте с уникальным именем на каждый запуск: dev-образ с подключенными исходниками
-P="asian-restaurant-ops-test-$(date +%s)"
+P="asian-restaurant-ops-test-$(openssl rand -hex 8)"
 docker compose -p "$P" -f compose.yaml -f compose.test.yaml up -d --build operations-api
 docker compose -p "$P" -f compose.yaml -f compose.test.yaml exec operations-api pytest
 docker compose -p "$P" -f compose.yaml -f compose.test.yaml down -v

@@ -5,10 +5,10 @@ services:
     environment:
       # the tests create their own database, which only the bootstrap superuser may
       OPERATIONS_DATABASE_URL: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
-      STOREFRONT_DSN_FOR_ISOLATION: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@db:5432/${POSTGRES_DB}
+      STOREFRONT_DSN_FOR_ISOLATION: postgres://operations_runtime:${OPERATIONS_DB_RUNTIME_PASSWORD:-dev-operations-runtime}@db:5432/${POSTGRES_DB}
     volumes:
       - ./services/order_operations:/srv/services/order_operations
-    # the isolation test reaches the storefront database to prove the operations credentials are refused there
+    # the isolation test reaches the storefront database to prove the role the operations processes run as is refused there
     networks: [storefront]
     depends_on:
       db:

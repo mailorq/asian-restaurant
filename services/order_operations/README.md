@@ -46,8 +46,11 @@ Bridge - временный адаптер: storefront пока публикуе
 ## Изоляция сообщений
 
 Storefront и Operations живут в **разных vhost RabbitMQ** с отдельными пользователями и минимальными правами.
-Провижининг и полная матрица прав - в [`ops/rabbitmq/README.md`](../../ops/rabbitmq/README.md). Адрес
-брокера storefront Operations не получает.
+Провижининг и полная матрица прав - в [`ops/rabbitmq/README.md`](../../ops/rabbitmq/README.md).
+`operations-api` к брокеру не подключается вовсе, `operations-consumer` работает только в vhost `operations`. В
+vhost `storefront` ходят два выделенных процесса со своими ограниченными учетными данными: `commands-relay` может
+только публиковать `orders.transition.requested` в обмен `commands`, а `operations-bridge` читает события
+storefront и создает и пишет только свои `operations.bridge.*`.
 
 Bridge надежен: проверяет каждый сконвертированный конверт по контракту до публикации, подтверждает исходную
 доставку только после подтвержденной публикации, отправляет ядовитые сообщения в свою DLQ, а временные сбои
@@ -113,7 +116,7 @@ docker compose exec operations-db psql -U ops_user -d operations -c \
 bootstrap-пользователем, потому что они создают свою базу, и дает им адрес базы storefront для проверки изоляции.
 
 ```bash
-P="asian-restaurant-ops-test-$(date +%s)"
+P="asian-restaurant-ops-test-$(openssl rand -hex 8)"
 docker compose -p "$P" -f compose.yaml -f compose.test.yaml up -d --build operations-api
 docker compose -p "$P" -f compose.yaml -f compose.test.yaml exec operations-api pytest
 docker compose -p "$P" -f compose.yaml -f compose.test.yaml exec operations-api sh -c "cd /srv/packages/event_contracts && python -m pytest -p no:cacheprovider"
