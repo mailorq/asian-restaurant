@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: backend
@@ -66,7 +66,7 @@ jobs:
   # the whole command lifecycle, lease/fencing, expiry and the dispatcher live here; without this
   # job their tests never run and a regression in operations reaches main green
   operations:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: services/order_operations
@@ -118,7 +118,7 @@ jobs:
       - run: uv run --locked pytest tests/ -q
 
   contracts:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: packages/event_contracts
@@ -134,7 +134,7 @@ jobs:
   security-config:
     # runs from the repo root (no working-directory), so scripts resolve compose files
     # and git paths correctly; ubuntu-latest ships Docker Compose v2 for the config check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - run: docker compose version
@@ -149,7 +149,7 @@ jobs:
     # the publisher credential is a security boundary, so its restrictions are asserted against a
     # real broker instead of being skipped when no broker is configured
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -240,7 +240,7 @@ jobs:
   prod-bootstrap:
     # the release path for the broker: the one-shot rabbitmq-provision service against a bare broker from the production render, then the grants it has to leave behind
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/prod_bootstrap_smoke.sh
@@ -248,7 +248,7 @@ jobs:
   db-roles:
     # the production database roles: a storefront volume from before the split and a fresh operations volume, provisioned and migrated as a release does, then what the runtime role may and may not do
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/db_roles_smoke.sh
@@ -256,7 +256,7 @@ jobs:
   stack:
     # the production render released as DEPLOY.md releases it: nginx and prometheus without root, the photo upload at its limits, a recreated backend
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/stack_smoke.sh
@@ -265,13 +265,13 @@ jobs:
     # the operations pool on the production render: a pool of one under a locked projection and a burst past the
     # worker's bound, answered only with 200 and neutral 503s, within the pool's connection and the pids limit
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ops_pool_smoke.sh
 
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: frontend
