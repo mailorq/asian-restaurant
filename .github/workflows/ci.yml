@@ -52,8 +52,8 @@ jobs:
       COMMANDS_MQ_URL_FOR_TRANSPORT: amqp://ci:ci@localhost:5672/
       REQUIRE_COMMAND_TRANSPORT_TESTS: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - run: pip install uv==0.12.17
@@ -106,8 +106,8 @@ jobs:
       BRIDGE_MQ_URL_FOR_TRANSPORT: amqp://ci:ci@localhost:5672/
       REQUIRE_BRIDGE_TRANSPORT_TESTS: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - run: pip install uv==0.12.17
@@ -123,8 +123,8 @@ jobs:
       run:
         working-directory: packages/event_contracts
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - run: pip install uv==0.12.17
@@ -136,7 +136,7 @@ jobs:
     # and git paths correctly; ubuntu-latest ships Docker Compose v2 for the config check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: docker compose version
       # the production render must never depend on a repo-root .env; guard against one being
       # committed or created before the config check runs
@@ -151,8 +151,8 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - run: pip install pika==1.4.4 pytest==9.1.1
@@ -242,7 +242,7 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: bash scripts/prod_bootstrap_smoke.sh
 
   db-roles:
@@ -250,7 +250,7 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: bash scripts/db_roles_smoke.sh
 
   stack:
@@ -258,7 +258,7 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: bash scripts/stack_smoke.sh
 
   ops-pool:
@@ -267,7 +267,7 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: bash scripts/ops_pool_smoke.sh
 
   frontend:
@@ -276,10 +276,10 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci

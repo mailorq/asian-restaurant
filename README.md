@@ -121,7 +121,7 @@ Storefront - это `backend` (API, админка и BFF панели сотр�
 ## Быстрый старт
 
 Нужны Docker с Compose v2, bash и openssl (на Windows подходит Git Bash). Для проверок фронтенда вне Docker -
-Node.js 20+, для Python-инструментов - [uv](https://docs.astral.sh/uv/).
+Node.js 22+, для Python-инструментов - [uv](https://docs.astral.sh/uv/).
 
 ```bash
 cp .env.example .env
