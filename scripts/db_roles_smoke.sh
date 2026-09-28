@@ -166,6 +166,18 @@ check_side() {  # check_side <service> <bootstrap> <db> <side> <migrator passwor
 check_side db "$SF_BOOT" storefront storefront "$SF_MIGRATOR_PW" "$SF_RUNTIME_PW"
 check_side operations-db "$OPS_BOOT" operations operations "$OPS_MIGRATOR_PW" "$OPS_RUNTIME_PW"
 
+# only the other server's own refusal of the login counts, 28P01, which psql hands on as its message: a network or name failure is no proof
+cross() {  # cross <password> <host> <user> <db>
+  local out
+  out="$(client "$1" "$2" "$3" "$4" "select 1" || true)"
+  grep -qF "FATAL:  password authentication failed for user \"$3\"" <<<"$out" || fail "$3 was not refused by $2: $out"
+}
+cross "$OPS_RUNTIME_PW" db operations_runtime storefront
+cross "$OPS_MIGRATOR_PW" db operations_migrator storefront
+cross "$SF_RUNTIME_PW" operations-db storefront_runtime operations
+cross "$SF_MIGRATOR_PW" operations-db storefront_migrator operations
+echo "OK each database refuses the login of the other one's roles, which work on their own database above"
+
 echo "== the application images, through the DSNs the production render gives them =="
 dc run --rm --no-deps backend python manage.py migrate --check >/dev/null || fail "backend cannot read its migration state"
 dc run --rm --no-deps operations-api python manage.py migrate --check >/dev/null || fail "operations-api cannot read its migration state"
