@@ -24,6 +24,12 @@ x-db-provision: &db-provision
   pids_limit: 16
   restart: "no"
 
+# processes connect as the runtime role and migration jobs as the migrator, in dev as well: the provisioning refuses to run while the bootstrap superuser has open sessions. production overrides these urls
+x-storefront-runtime-dsn: &storefront-runtime-dsn postgres://storefront_runtime:${STOREFRONT_DB_RUNTIME_PASSWORD:-dev-storefront-runtime}@db:5432/${POSTGRES_DB}
+x-storefront-migrator-dsn: &storefront-migrator-dsn postgres://storefront_migrator:${STOREFRONT_DB_MIGRATOR_PASSWORD:-dev-storefront-migrator}@db:5432/${POSTGRES_DB}
+x-operations-runtime-dsn: &operations-runtime-dsn postgres://operations_runtime:${OPERATIONS_DB_RUNTIME_PASSWORD:-dev-operations-runtime}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
+x-operations-migrator-dsn: &operations-migrator-dsn postgres://operations_migrator:${OPERATIONS_DB_MIGRATOR_PASSWORD:-dev-operations-migrator}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
+
 services:
   db:
     image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
@@ -96,6 +102,7 @@ services:
     networks: [storefront]
     environment:
       RUN_MIGRATIONS: "1"
+      DATABASE_URL: *storefront-migrator-dsn
     command: ["true"]
     depends_on:
       storefront-db-provision:
@@ -130,7 +137,7 @@ services:
     environment:
       RUN_MIGRATIONS: "1"
       OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:-ops-dev-insecure}
-      OPERATIONS_DATABASE_URL: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
+      OPERATIONS_DATABASE_URL: *operations-migrator-dsn
     command: ["true"]
     depends_on:
       operations-db-provision:
@@ -165,6 +172,7 @@ services:
     env_file: [.env]
     networks: [edge, storefront, cache, broker_storefront, identity, metrics_storefront, egress_backend]
     environment:
+      DATABASE_URL: *storefront-runtime-dsn
       PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
       DJANGO_DB_POOL_MAX_SIZE: "8"
       IDENTITY_JWT_PRIVATE_KEY_FILE: /run/identity/jwt_private_key.pem
@@ -205,6 +213,7 @@ services:
     command: python manage.py publish_outbox --loop
     networks: [storefront, broker_storefront, metrics_storefront]
     environment:
+      DATABASE_URL: *storefront-runtime-dsn
       OUTBOX_METRICS_PORT: "9104"
     expose:
       - "9104"
@@ -229,6 +238,8 @@ services:
     env_file: [.env]
     command: python manage.py run_ops_consumer
     networks: [storefront, broker_storefront]
+    environment:
+      DATABASE_URL: *storefront-runtime-dsn
     depends_on:
       storefront-migrate:
         condition: service_completed_successfully
@@ -265,7 +276,7 @@ services:
       target: prod
     environment:
       OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:-ops-dev-insecure}
-      OPERATIONS_DATABASE_URL: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
+      OPERATIONS_DATABASE_URL: *operations-runtime-dsn
       OPERATIONS_RABBITMQ_URL: ${OPERATIONS_RABBITMQ_URL}
       IDENTITY_JWKS_URL: ${IDENTITY_JWKS_URL:-http://backend:8000/api/auth/jwks}
       OPERATIONS_REDIS_URL: redis://operations-redis:6379/0
@@ -298,7 +309,7 @@ services:
     networks: [operations, broker_operations, metrics_operations]
     environment:
       OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:-ops-dev-insecure}
-      OPERATIONS_DATABASE_URL: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
+      OPERATIONS_DATABASE_URL: *operations-runtime-dsn
       OPERATIONS_RABBITMQ_URL: ${OPERATIONS_RABBITMQ_URL}
       OPERATIONS_METRICS_PORT: "9101"
     expose:
@@ -324,7 +335,7 @@ services:
     networks: [operations, broker_operations]
     environment:
       OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:-ops-dev-insecure}
-      OPERATIONS_DATABASE_URL: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
+      OPERATIONS_DATABASE_URL: *operations-runtime-dsn
       OPERATIONS_BRIDGE_CONSUME_URL: ${OPERATIONS_BRIDGE_CONSUME_URL}
       OPERATIONS_BRIDGE_PUBLISH_URL: ${OPERATIONS_BRIDGE_PUBLISH_URL}
     depends_on:
@@ -346,6 +357,7 @@ services:
     command: python manage.py consume_commands
     networks: [storefront, broker_storefront, metrics_storefront]
     environment:
+      DATABASE_URL: *storefront-runtime-dsn
       COMMANDS_METRICS_PORT: "9102"
     expose:
       - "9102"
@@ -377,7 +389,7 @@ services:
     networks: [operations, broker_operations, metrics_operations]
     environment:
       OPERATIONS_SECRET_KEY: ${OPERATIONS_SECRET_KEY:-ops-dev-insecure}
-      OPERATIONS_DATABASE_URL: postgres://${OPERATIONS_DB_USER:-ops_user}:${OPERATIONS_DB_PASSWORD:-ops_pass}@operations-db:5432/${OPERATIONS_DB_NAME:-operations}
+      OPERATIONS_DATABASE_URL: *operations-runtime-dsn
       OPERATIONS_COMMANDS_RABBITMQ_URL: ${OPERATIONS_COMMANDS_RABBITMQ_URL:-}
       OPERATIONS_METRICS_PORT: "9103"
     expose:
