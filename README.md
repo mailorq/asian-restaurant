@@ -166,7 +166,10 @@ docker compose exec backend python manage.py transitions_via_commands +380671112
 
 ```bash
 # фронтенд: типы, юнит-тесты сценария команд, production-сборка
-cd frontend && npm ci && npm run lint && npm test && npm run build && cd ..
+cd frontend && npm ci --no-audit && npm run lint && npm test && npm run build && cd ..
+
+# аудит зависимостей фронтенда, как в CI: запрос к базе уязвимостей npm, high и critical дают ошибку
+cd frontend && npm audit --audit-level=high && cd ..
 
 # общие контракты событий
 cd packages/event_contracts && uv sync --locked && uv run --locked pytest -q && cd ../..
