@@ -1,138 +1,126 @@
 # Asian Restaurant
 
-Food ordering for a pan-Asian restaurant by [mailorq](https://github.com/mailorq): a storefront with a menu, a
-server-side cart and checkout, and an employee panel that moves orders through their statuses.
+Заказ еды в паназиатском ресторане: витрина с меню, серверная корзина и оформление заказа, история заказов
+покупателя и панель сотрудника, в которой заказ проходит свои статусы.
 
-Two Django services and a React SPA:
+Два Django-сервиса и React SPA:
 
-- **storefront** (`backend/`) owns customers, the menu, stock, carts and orders. It serves the public API, the
-  Django admin and the employee panel's API, and it is the only process that writes an order.
-- **Operations** (`services/order_operations/`) keeps its own read models of orders, customers and stock, and the
-  lifecycle of employee commands. It never touches the storefront database.
-- **frontend** (`frontend/`) is the React SPA for customers and employees, served by nginx.
+- **storefront** (`backend/`) владеет покупателями, меню, складом, корзинами и заказами. Он отдает публичное
+  API, Django admin и API панели сотрудника и единственный изменяет заказ.
+- **Operations** (`services/order_operations/`) строит свои проекции заказов, покупателей и склада и ведет
+  жизненный цикл команд сотрудника. В базу storefront он не обращается.
+- **frontend** (`frontend/`) - React SPA для покупателей и сотрудников, ее раздает nginx.
 
-There is no public hosting yet. Everything below runs locally or on disposable Docker Compose stands. TLS
-termination by an ingress in front of nginx is a requirement of a future deployment, not a running component
-(see [DEPLOY.md](DEPLOY.md)).
+Публичного хостинга пока нет: все, что описано ниже, запускается локально или на одноразовых стендах Docker
+Compose. TLS завершает ingress перед nginx, и это требование будущего развертывания, а не работающий компонент
+(см. [DEPLOY.md](DEPLOY.md)).
 
-## Tech stack
+## Стек
 
-| Layer | Technology |
+| Слой | Технологии |
 |---|---|
-| Frontend | React 18, TypeScript, Vite, Tailwind CSS 4, TanStack Query, Zustand |
-| Backend | Python 3.13, Django 5.2, django-ninja, gunicorn with uvicorn workers |
-| Storage | PostgreSQL 16 (one database per service), Redis 7 (one instance per service) |
-| Messaging | RabbitMQ 4.3, two vhosts, transactional outboxes on both sides |
-| Infra | Docker Compose, nginx, Prometheus |
-| Quality | pytest, ruff, `node --test`, uv lock files, GitHub Actions, production render gate and Compose smokes |
+| Фронтенд | React 18, TypeScript, Vite, Tailwind CSS 4, TanStack Query, Zustand |
+| Бэкенд | Python 3.13, Django 5.2, django-ninja, gunicorn с воркерами uvicorn |
+| Хранилища | PostgreSQL 16 и Redis 7, у каждого сервиса свои |
+| Сообщения | RabbitMQ 4.3, два vhost, transactional outbox в обоих сервисах |
+| Инфраструктура | Docker Compose, nginx, Prometheus |
+| Проверки | pytest, ruff, `node --test`, lock-файлы uv, GitHub Actions, гейт production-рендера, Compose-смоуки |
 
-## Architecture
+## Архитектура
 
 ```mermaid
 flowchart TB
-    browser["Browser<br/>React SPA"] --> nginx["nginx<br/>frontend"]
-    nginx -->|"/api, /admin"| storefront
-
-    subgraph storefront["storefront: source of truth for orders and stock"]
-        direction LR
-        backend["backend<br/>API, admin, employee BFF"]
-        relay["relay<br/>publishes the outbox"]
-        cconsumer["commands-consumer<br/>applies commands"]
-        db[("PostgreSQL<br/>storefront")]
-        redis[("Redis<br/>cache, cart, limits")]
-        backend --> db
-        backend --> redis
-        relay --> db
-        cconsumer --> db
-    end
-
-    subgraph operations["Operations: projections and command lifecycle"]
-        direction LR
-        api["operations-api<br/>commands, read models"]
-        crelay["commands-relay<br/>publishes commands"]
-        bridge["operations-bridge<br/>copies between vhosts"]
-        oconsumer["operations-consumer<br/>projections, outcomes"]
-        odb[("PostgreSQL<br/>operations")]
-        oredis[("Redis<br/>command limiter")]
-        api --> odb
-        api --> oredis
-        crelay --> odb
-        oconsumer --> odb
-        bridge ~~~ odb
-    end
-
-    subgraph broker["RabbitMQ"]
-        direction TB
-        vs["vhost storefront<br/>events, commands"]
-        vo["vhost operations<br/>versioned events"]
-    end
-
-    storefront -->|"BFF over HTTP,<br/>JWT minted per call"| operations
-    storefront -->|"publishes events,<br/>reads commands"| broker
-    operations -->|"publishes commands,<br/>reads events"| broker
+    user["Покупатель<br/>и Сотрудник"] --> web["react + nginx"]
+    web --> store["Storefront<br/>api + workers"]
+    store --> sdb[("PostgreSQL<br/>заказы, склад")]
+    store --> sredis[("Redis<br/>корзина, кэш")]
+    store <-->|AMQP| mq["RabbitMQ<br/>два vhost"]
+    store -->|"HTTP (BFF)"| ops["Operations<br/>api + workers"]
+    mq <-->|AMQP| ops
+    ops --> odb[("PostgreSQL<br/>проекции, команды")]
+    ops --> oredis[("Redis<br/>лимиты команд")]
 ```
 
-Arrows point from a component to what it connects to. An employee does not change an order in one request: the
-panel posts to the storefront, whose BFF mints a short-lived JWT and creates a command in operations-api, and the
-answer is `202` with a command id (`200` with the same command for a repeat). The order changes later:
-commands-relay publishes the request from the Operations outbox, and commands-consumer in the storefront applies
-it under a lock on the order after checking the expected status. The outcome is written to the storefront outbox
-in the same transaction and travels through the relay and operations-bridge to operations-consumer, which
-finalizes the command, so the panel follows the command status instead of expecting an immediate answer. The
-storefront database stays the source of truth for orders and stock; RabbitMQ only carries messages from the
-outboxes to the consumers.
+Storefront - это `backend` (API, админка и BFF панели сотрудника) и фоновые процессы `relay` и
+`commands-consumer`. Operations - это `operations-api` и процессы `commands-relay`, `operations-bridge` и
+`operations-consumer`. Базы друг друга сервисы не читают: storefront вызывает Operations по HTTP, остальное идет
+через RabbitMQ, где у каждого сервиса свой vhost. Источник истины для заказов и склада - база storefront, брокер
+только переносит сообщения из outbox к потребителям.
 
-## Order flow
+**События**, от storefront к Operations:
 
-1. A signed-in customer checks out the server-side cart. In one storefront transaction the order is created, stock
-   is taken under row locks, the address is verified by the geocoder with a cache, and an `order.created` row is
-   written to `OrderOutbox`. The checkout is idempotent by its key and by the cart version.
-2. The relay publishes outbox rows with publisher confirms, in order per aggregate. The bridge copies them from the
-   `storefront` vhost to the `operations` vhost, and operations-consumer updates the Operations projections.
-3. An employee confirms the order. For an employee switched to the command plane this is the command path above;
-   for everyone else it is a direct transition in the storefront under the same lock and `expected_status`
-   check, so both paths can coexist on one order without applying twice.
-4. Every status change is a new version of the order aggregate and reaches Operations the same way as step 2.
+1. Изменение заказа, склада, покупателя или роли сотрудника записывается в `OrderOutbox` в той же транзакции,
+   что и само изменение.
+2. `relay` публикует строки outbox в vhost `storefront` с подтверждением брокера, события одного агрегата строго
+   по порядку.
+3. `operations-bridge` переносит их в vhost `operations` в версионированном формате, `operations-consumer`
+   обновляет проекции.
 
-## Commands: idempotency and states
+**Команды**, от панели к заказу:
 
-- One employee action is one `Idempotency-Key`. Operations identifies a command by
-  `(actor, command type, order, key)`: a repeat returns the existing command, the same key with another intent is
-  `409`. The storefront BFF keeps no state about repeats ([ADR-0002](packages/event_contracts/docs/ADR-0002-bff-retry-state.md)).
-- New commands are limited per employee and per employee and order in the Operations Redis; a repeat is never
-  charged, a refusal is `429` with `Retry-After`, and without the limiter store a new command is `503`.
-- `pending` and `dispatched` are on their way. `succeeded` and `rejected` are final. `timed_out` and
-  `dispatch_failed` are not final: a late outcome can still finish the command, otherwise an operator decides with
-  `resolve_command` ([runbook-0008](services/order_operations/docs/runbook-0008-command-plane.md)).
-- The panel stores an unresolved action with its key in the browser and offers to continue it after a lost answer
-  or a reload, always under the same key.
+1. Панель отправляет смену статуса в storefront. BFF выпускает короткоживущий JWT, создает команду в
+   `operations-api` и отвечает `202` с id команды (`200` с той же командой на повтор ключа).
+2. `commands-relay` публикует команду из outbox Operations в обмен `commands` vhost `storefront`.
+3. `commands-consumer` под блокировкой заказа проверяет сотрудника и ожидаемый статус, меняет статус и в той же
+   транзакции пишет исход в `OrderOutbox`.
+4. Исход возвращается в Operations путем событий, и `operations-consumer` завершает команду. Панель все это время
+   следит за статусом команды: подтверждение приходит асинхронно, а не в ответе на запрос.
 
-The full design of the command plane: [ADR-0001](packages/event_contracts/docs/ADR-0001-order-transition-command-plane.md).
+## Заказ: от корзины до подтверждения
 
-## Roles and access
+1. Покупатель с аккаунтом оформляет серверную корзину. Сначала, вне транзакции, адрес проверяет геокодер с кешем:
+   если адрес не найден или геокодер недоступен, заказ создается с непроверенным адресом. Затем в одной транзакции
+   storefront остатки списываются под блокировкой строк и создаются заказ и строка `order.created` в
+   `OrderOutbox`. Повтор с тем же ключом идемпотентности или с той же версией корзины возвращает уже созданный
+   заказ.
+2. Событие доходит до проекций Operations путем, описанным выше.
+3. Сотрудник подтверждает заказ. Для сотрудника на командном контуре это путь команды, для остальных - прямая
+   смена статуса в storefront под той же блокировкой и проверкой `expected_status`, поэтому оба пути могут
+   сосуществовать на одном заказе и не применяются дважды.
+4. Каждая смена статуса - новая версия агрегата заказа, она уходит в Operations так же, как в шаге 2.
 
-| Role | Access |
+## Команды: идемпотентность и состояния
+
+- Одно действие сотрудника - один `Idempotency-Key`. Operations различает команду по
+  `(сотрудник, тип команды, заказ, ключ)`: повтор возвращает существующую команду, тот же ключ с другим
+  намерением получает `409`. BFF storefront состояния повторов не хранит
+  ([ADR-0002](packages/event_contracts/docs/ADR-0002-bff-retry-state.md)).
+- Новые команды ограничены в Redis Operations на сотрудника и на пару сотрудник-заказ. Повтор лимит не
+  расходует, отказ - `429` с `Retry-After`, а без хранилища лимитов новая команда получает `503`.
+- `pending` и `dispatched` - команда в пути, `succeeded` и `rejected` - окончательные. `timed_out` и
+  `dispatch_failed` не окончательные: поздний исход еще может завершить команду, иначе решение принимает оператор
+  через `resolve_command` ([runbook-0008](services/order_operations/docs/runbook-0008-command-plane.md)).
+- Панель хранит незавершенное действие с его ключом в браузере и после потерянного ответа или перезагрузки
+  предлагает продолжить его тем же ключом.
+
+Полный дизайн командного контура - [ADR-0001](packages/event_contracts/docs/ADR-0001-order-transition-command-plane.md).
+
+## Роли и доступ
+
+| Роль | Доступ |
 |---|---|
-| customer | own cart, checkout, own order history |
-| `restaurant_operator` | order queue and status changes |
-| `restaurant_manager` | operator access plus stock and customer data |
-| superuser | everything, and the only one who grants staff roles |
+| покупатель | своя корзина, оформление заказа, своя история заказов |
+| `restaurant_operator` | очередь заказов и смена статусов |
+| `restaurant_manager` | доступ оператора, склад и данные покупателей |
+| суперпользователь | все, и только он выдает штатные роли |
 
-- An employee holds exactly one role; two role groups at once close access instead of widening it. `is_staff` alone
-  grants nothing. Every role change is recorded in `EmployeeRoleAudit`.
-- The storefront signs employee JWTs for Operations, which checks them against the storefront JWKS and accepts a
-  token only if its authorization version matches its own projection of the employee, so a revoked role stops
-  working before the token expires.
-- The panel never holds an Operations token: the BFF mints one per call. `POST /api/auth/employee-token` still
-  issues a token to a signed-in employee for direct Operations access; whether it stays is an open decision.
-- `transitions_via_commands` switches an employee to the command plane. The direct transition endpoint and the
-  admin transition actions are then closed to that employee, and a panel opened before the switch learns it from
+- Сотрудник держит ровно одну роль: две группы сразу закрывают доступ, а не расширяют его. `is_staff` сам по
+  себе ничего не дает. Каждое изменение роли пишется в `EmployeeRoleAudit`.
+- Storefront подписывает JWT сотрудника для Operations. Operations проверяет подпись по JWKS storefront и
+  принимает токен, только если его `authz_version` совпадает с проекцией сотрудника в Operations. Отзыв роли
+  повышает версию, и токен, выпущенный раньше, отклоняется, когда событие отзыва дошло до проекции; до этого
+  внешняя граница - срок жизни токена (`IDENTITY_JWT_TTL`, по умолчанию 600 с). Изменить заказ такой токен не
+  может и в этом окне: `commands-consumer` перепроверяет роль и версию сотрудника в базе storefront.
+- Панель не держит токен Operations, BFF выпускает его на каждый вызов. `POST /api/auth/employee-token` пока
+  выдает токен вошедшему сотруднику для прямого доступа к Operations; оставлять ли его - открытое решение.
+- `transitions_via_commands` переводит сотрудника на командный контур. Прямой эндпоинт смены статуса и действия
+  в админке для него закрываются, а панель, открытая до переключения, узнает об этом из
   `403 transition_mode_changed`.
 
-## Getting started
+## Быстрый старт
 
-Requirements: Docker with Compose v2, bash and openssl (Git Bash works on Windows). For the frontend tools outside
-Docker, Node.js 20+; for the Python tools, [uv](https://docs.astral.sh/uv/).
+Нужны Docker с Compose v2, bash и openssl (на Windows подходит Git Bash). Для проверок фронтенда вне Docker -
+Node.js 20+, для Python-инструментов - [uv](https://docs.astral.sh/uv/).
 
 ```bash
 cp .env.example .env
@@ -141,106 +129,107 @@ bash scripts/dev_gen_jwt_key.sh
 docker compose up -d --build
 ```
 
-The override runs the backend with `runserver` and the frontend with Vite, both with the source mounted.
-Migrations run as the one-shot `storefront-migrate` and `operations-migrate` jobs before anything else starts.
-The development stack also starts `ops`, a legacy projection consumer of the storefront that production does not
-run.
+Override запускает backend через `runserver`, а фронтенд через Vite, оба с подключенными исходниками. Миграции
+выполняют одноразовые `storefront-migrate` и `operations-migrate` под ролью мигратора, процессы подключаются к
+базам под runtime-ролью, как в production. Bootstrap-пользователь только создает роли, и провижининг отказывает,
+пока под ним открыты сессии; поэтому повторный `docker compose up -d` на работающем стеке проходит и применяет
+новые миграции. Dev-стек запускает еще `ops`, устаревшего потребителя проекций storefront, которого production
+не запускает.
 
 ```bash
-# catalog and initial stock, once per new database
+# каталог и начальные остатки, один раз на новой базе
 docker compose exec backend python manage.py seed_menu
 docker compose exec backend python manage.py seed_initial_stock --confirm --quantity 50
 
-# a superuser who grants staff roles
+# суперпользователь, который выдает штатные роли
 docker compose exec backend python manage.py createsuperuser --username +380671112244
 ```
 
-An employee signs up on the site like a customer, here with the phone `+380671112233`, and then gets a role:
+Сотрудник регистрируется на сайте как покупатель, здесь с телефоном `+380671112233`, и получает роль:
 
 ```bash
 docker compose exec backend python manage.py grant_employee +380671112233 --role restaurant_manager --actor +380671112244
-# optional: move that employee to the command plane
+# по желанию: перевести его на командный контур
 docker compose exec backend python manage.py transitions_via_commands +380671112233
 ```
 
-| What | Where |
+| Что | Где |
 |---|---|
-| Storefront and employee panel | http://localhost:5173 |
-| API docs (development only) | http://localhost:8000/api/docs |
+| Витрина и панель сотрудника | http://localhost:5173 |
+| Документация API (только в dev) | http://localhost:8000/api/docs |
 | Django admin | http://localhost:8000/admin/ |
 | RabbitMQ management | http://localhost:15672 |
 | Prometheus | http://localhost:9090 |
 
-## Testing
+## Тесты
 
 ```bash
-# frontend: types, unit tests of the command flow, production build
+# фронтенд: типы, юнит-тесты сценария команд, production-сборка
 cd frontend && npm ci && npm run lint && npm test && npm run build && cd ..
 
-# shared event contracts
+# общие контракты событий
 cd packages/event_contracts && uv sync --locked && uv run --locked pytest -q && cd ../..
 
-# storefront, inside the development stack started above (its image carries the dev dependency group)
-docker compose exec backend pytest
+# storefront в запущенном dev-стеке: тесты создают свою базу, это может только bootstrap-пользователь из .env
+docker compose exec backend sh -c 'DATABASE_URL="postgres://$POSTGRES_USER:$POSTGRES_PASSWORD@db:5432/$POSTGRES_DB" pytest'
 
-# Operations, on the test overlay in a project of its own: the dev image with the source mounted
-docker compose -p asian-restaurant-ops-test -f compose.yaml -f compose.test.yaml up -d --build operations-api
-docker compose -p asian-restaurant-ops-test -f compose.yaml -f compose.test.yaml exec operations-api pytest
-docker compose -p asian-restaurant-ops-test -f compose.yaml -f compose.test.yaml down -v
+# Operations в отдельном проекте с уникальным именем на каждый запуск: dev-образ с подключенными исходниками
+P="asian-restaurant-ops-test-$(date +%s)"
+docker compose -p "$P" -f compose.yaml -f compose.test.yaml up -d --build operations-api
+docker compose -p "$P" -f compose.yaml -f compose.test.yaml exec operations-api pytest
+docker compose -p "$P" -f compose.yaml -f compose.test.yaml down -v
 ```
 
-The test overlay gets its own project because it replaces operations-api and the broker without the development
-override, and the database provisioning refuses to run while the development stack is connected.
+Тестовый оверлей не запускают в проекте dev-стека: он пересоздал бы `operations-api` и брокер без dev-override.
+Последняя команда удаляет тома только проекта, созданного первой.
 
-Production render and disposable stands, each in its own Compose project:
+Гейт production-рендера и одноразовые стенды, каждый в своем Compose-проекте:
 
 ```bash
-bash scripts/check_prod_config.sh             # the production render gate
-bash scripts/stack_smoke.sh                   # nginx, prometheus, networks and the command plane on a released stack
-bash scripts/restore_rehearsal.sh             # backup in a maintenance window, restore into an empty stack
+bash scripts/check_prod_config.sh             # гейт production-рендера
+bash scripts/stack_smoke.sh                   # nginx, prometheus, сети и командный контур на выпущенном стеке
+bash scripts/restore_rehearsal.sh             # копия в окне обслуживания и восстановление в пустой стек
 E2E_ALLOW_DESTRUCTIVE=1 bash scripts/e2e_reconcile.sh
 ```
 
-CI runs the Python suites with `uv sync --locked` against real PostgreSQL, Redis and RabbitMQ, the frontend checks,
-the gate, the broker permission test and the production bootstrap, database roles, operations pool and stack smokes:
-[.github/workflows/ci.yml](.github/workflows/ci.yml). The restore rehearsal and the e2e run are local only.
+CI прогоняет Python-наборы через `uv sync --locked` на настоящих PostgreSQL, Redis и RabbitMQ, проверки
+фронтенда, гейт, тест прав издателя команд, production-bootstrap брокера, смоуки ролей баз, пула Operations и
+стека: [.github/workflows/ci.yml](.github/workflows/ci.yml). Репетиция восстановления и e2e запускаются только
+локально.
 
-## Repository layout
+## Структура
 
 ```
 .
-├── backend/                  # storefront: Django project
-│   ├── accounts/             # users, staff roles, audit, employee JWT
-│   ├── menu/                 # catalog, stock, stock adjustments
-│   ├── cart/                 # server-side cart in Redis
-│   ├── orders/               # checkout, orders, geocoder, outbox, command consumer
-│   ├── employee/             # employee panel API and the command BFF
-│   ├── ops/                  # legacy order projection, development stack only
-│   ├── config/               # settings, API root, workers
-│   └── seed/                 # menu seed data and product photos with their sha256
-├── services/order_operations/  # Operations: projections, command API, relays, bridge
-├── packages/event_contracts/ # event and command contracts shared by both services
-├── frontend/                 # React SPA and its nginx config
-├── ops/                      # postgres roles, rabbitmq provisioning, prometheus, identity keys
-├── scripts/                  # production gate, smokes, restore rehearsal
-├── compose.yaml              # the stack
-├── compose.prod.yaml         # production overlay
-├── compose.override.example.yaml  # development overlay template
-└── DEPLOY.md                 # release, secrets, network model, backup, operations
+├── backend/                  # storefront: Django-проект
+│   ├── accounts/             # пользователи, штатные роли, аудит, JWT сотрудника
+│   ├── menu/                 # каталог, склад, корректировки остатков
+│   ├── cart/                 # серверная корзина в Redis
+│   ├── orders/               # checkout, заказы, геокодер, outbox, потребитель команд
+│   ├── employee/             # API панели сотрудника и BFF команд
+│   ├── ops/                  # устаревшая проекция заказов, только dev-стек
+│   ├── config/               # настройки, корень API, воркеры
+│   └── seed/                 # данные меню и фото блюд с их sha256
+├── services/order_operations/  # Operations: проекции, API команд, relay, bridge
+├── packages/event_contracts/ # контракты событий и команд обоих сервисов
+├── frontend/                 # React SPA и конфиг nginx
+├── ops/                      # роли postgres, провижининг rabbitmq, prometheus, ключи identity
+├── scripts/                  # гейт production, смоуки, репетиция восстановления
+├── compose.yaml              # стек
+├── compose.prod.yaml         # production-оверлей
+├── compose.override.example.yaml  # шаблон dev-оверлея
+└── DEPLOY.md                 # релиз, секреты, модель сетей, копия и восстановление
 ```
 
-## Documentation
+## Документация
 
-- [DEPLOY.md](DEPLOY.md) - release order, secrets, database roles, ingress requirements, network model, backup
-  and restore, image pinning.
-- [ADR-0001](packages/event_contracts/docs/ADR-0001-order-transition-command-plane.md) - the order transition
-  command plane.
-- [ADR-0002](packages/event_contracts/docs/ADR-0002-bff-retry-state.md) - why the BFF keeps no retry state.
-- [runbook-0008](services/order_operations/docs/runbook-0008-command-plane.md) - commands that need an operator.
-- [services/order_operations/README.md](services/order_operations/README.md) - the Operations service.
-- [ops/rabbitmq/README.md](ops/rabbitmq/README.md), [ops/identity/README.md](ops/identity/README.md) - broker
-  provisioning and signing keys.
-
-## Author
-
-- [mailor](https://github.com/mailorq) - fullstack
+- [DEPLOY.md](DEPLOY.md) - порядок релиза, секреты, роли баз, требования к ingress, модель сетей, копия и
+  восстановление, закрепление образов.
+- [ADR-0001](packages/event_contracts/docs/ADR-0001-order-transition-command-plane.md) - командный контур смены
+  статуса заказа.
+- [ADR-0002](packages/event_contracts/docs/ADR-0002-bff-retry-state.md) - почему BFF не хранит состояние
+  повторов.
+- [runbook-0008](services/order_operations/docs/runbook-0008-command-plane.md) - команды, которым нужен оператор.
+- [services/order_operations/README.md](services/order_operations/README.md) - сервис Operations.
+- [ops/rabbitmq/README.md](ops/rabbitmq/README.md), [ops/identity/README.md](ops/identity/README.md) - провижининг
+  брокера и ключи подписи.

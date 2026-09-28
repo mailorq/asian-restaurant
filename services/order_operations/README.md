@@ -1,117 +1,141 @@
-# Order Operations service
+# Сервис Operations
 
-Independent service for restaurant staff. Owns only its own read models and
-command state; it never imports storefront ORM and never touches the storefront
-database. Fed by versioned domain events over RabbitMQ.
+Независимый сервис для сотрудников ресторана. Хранит свои проекции заказов, покупателей, склада и прав
+сотрудников и жизненный цикл команд смены статуса. ORM storefront не импортирует и в базу storefront не ходит,
+данные получает версионированными событиями через RabbitMQ. Как он встроен в систему, описано в
+[корневом README](../../README.md#архитектура).
 
-## Data ownership
+## Владение данными
 
-- Storefront is the single writer of `Order`, `Product/stock`, customer identity
-  and checkout invariants.
-- Operations builds projections from events and (Phase 3) requests changes via
-  async commands; it is never a second writer of order status.
-- Separate databases, separate roles: `ops_user` cannot authenticate to the
-  storefront DB and vice versa. No shared Django session, `SECRET_KEY` or creds.
+- Storefront - единственный писатель заказа, склада, данных покупателя и инвариантов checkout.
+- Operations строит проекции из событий и просит изменить заказ асинхронной командой, вторым писателем статуса
+  заказа он не становится.
+- Базы и роли раздельные: процессы подключаются как `operations_runtime`, миграции идут под
+  `operations_migrator`, а учетные данные Operations база storefront не принимает (`tests/test_isolation.py`).
+  Общих Django-сессий, `SECRET_KEY` и учетных данных нет.
 
-## Contracts
+## Контракты
 
-Versioned Pydantic contracts live in `packages/event_contracts` (no Django). A
-single envelope (`event_id`, `event_type`, `schema_version`, `occurred_at`,
-`producer`, `aggregate{type,id,version}`, `correlation_id`, `causation_id`,
-`trace_id`, `data`) wraps every event and command. Backward-compatible additions
-are ignored by older consumers; breaking changes require a new event version.
+Версионированные Pydantic-контракты лежат в `packages/event_contracts` (без Django). Каждое событие и каждую
+команду оборачивает один конверт: `event_id`, `event_type`, `schema_version`, `occurred_at`, `producer`,
+`aggregate{type,id,version}`, `correlation_id`, `causation_id`, `trace_id`, `data`. Обратно совместимые
+добавления старые потребители игнорируют, несовместимое изменение требует новой версии события.
 
-## Processes
+## Процессы
 
-| Process | Command |
+| Процесс | Что делает | Запуск |
+|---|---|---|
+| `operations-api` | проекции для сотрудников, создание и чтение команд под `/ops-api/` | gunicorn с воркерами uvicorn, в dev-образе `runserver` |
+| `operations-consumer` | обновляет проекции и завершает команды по их исходам | `python manage.py run_operations_consumer` |
+| `commands-relay` | публикует команды из outbox и периодически закрывает просроченные | `python manage.py publish_commands --loop` |
+| `operations-bridge` | переносит события из vhost `storefront` в vhost `operations` | `python manage.py bridge_storefront_events` |
+
+Bridge - временный адаптер: storefront пока публикует события в прежнем формате, bridge переводит их в
+версионированные конверты.
+
+Ручные команды:
+
+| Команда | Назначение |
 |---|---|
-| API (reads projections, issues transition commands) | `python manage.py runserver` → `/ops-api/` |
-| Projection consumer | `python manage.py run_operations_consumer` |
-| Command relay | `python manage.py publish_commands --loop` |
-| Command sweeper (manual recovery) | `python manage.py sweep_commands` |
-| Legacy bridge (temporary) | `python manage.py bridge_storefront_events` |
-| Test event (verification) | `python manage.py publish_test_event --order-id N --customer-id M` |
+| `resolve_command` | закрывает `timed_out` или `dispatch_failed` по решению оператора ([runbook-0008](docs/runbook-0008-command-plane.md)) |
+| `sweep_commands` | тот же проход по просроченным командам, что периодически делает `commands-relay` |
+| `reconcile` | сверяет проекции с завершенным снимком в обе стороны |
+| `dlq` | просмотр, повтор и удаление сообщений из dead-letter очереди |
+| `publish_test_event` | проверочное `order.created` в `operations.events` |
 
-## Messaging isolation
+## Изоляция сообщений
 
-Storefront and operations live in **separate RabbitMQ vhosts** with separate users and
-minimal permissions. Provisioning and the full permission matrix are in
-[`ops/rabbitmq/README.md`](../../ops/rabbitmq/README.md) (dev template + `provision.sh`
-for prod). Operations never receives the storefront AMQP URL.
+Storefront и Operations живут в **разных vhost RabbitMQ** с отдельными пользователями и минимальными правами.
+Провижининг и полная матрица прав - в [`ops/rabbitmq/README.md`](../../ops/rabbitmq/README.md). Адрес
+брокера storefront Operations не получает.
 
-The bridge is reliable: it validates each mapped envelope against the contract before
-publishing, acks the legacy delivery only after the versioned publish is confirmed,
-sends poison messages to its own DLQ, and delays transient failures through a bounded
-retry queue (`operations.bridge.*`) before giving up to the DLQ. It preserves the
-origin's `occurred_at` and keeps `producer=storefront`, tagging itself in `relayed_by`.
-Transition outcomes ride their own queue on both hops (`operations.bridge.outcomes`,
-`operations.outcomes`): commands carry a deadline, so they must not queue behind a projection
-backfill.
+Bridge надежен: проверяет каждый сконвертированный конверт по контракту до публикации, подтверждает исходную
+доставку только после подтвержденной публикации, отправляет ядовитые сообщения в свою DLQ, а временные сбои
+откладывает через ограниченную очередь повторов (`operations.bridge.*`), после которой сообщение уходит в DLQ.
+Он сохраняет исходный `occurred_at` и `producer=storefront`, отмечая себя в `relayed_by`. Исходы команд на обоих
+участках идут своей очередью (`operations.bridge.outcomes`, `operations.outcomes`): у команды есть срок, и она не
+должна ждать за догрузкой проекций.
 
-## Projection version fencing
+## Версии проекций
 
-The projection advances only on `incoming_version > current_version`. A lower version is
-a safe no-op (`operations_projection_events_total{outcome="stale"}`); the same version
-with a different `event_id` is a `ProjectionConflict` — the consumer routes it to the DLQ
-and records `outcome="conflict"` rather than overwriting. Re-delivery of the same
-`event_id` is idempotent via the inbox.
+Проекция продвигается только при `incoming_version > current_version`. Меньшая версия - безопасный no-op
+(`operations_projection_events_total{outcome="stale"}`). Та же версия с другим `event_id` - `ProjectionConflict`:
+потребитель отправляет сообщение в DLQ и пишет `outcome="conflict"`, ничего не перезаписывая. Повторная доставка
+того же `event_id` идемпотентна за счет inbox.
 
-## Run (dev)
+## Командный контур
+
+Сотрудник, переведенный на команды (`transitions_via_commands` в storefront), меняет статус заказа только через
+этот сервис. Панель обращается к BFF storefront, а тот вызывает
+`POST /ops-api/orders/{order_id}/transition-commands` с заголовком `Idempotency-Key`. Исход читается из
+`GET /ops-api/commands/{command_id}`, и только автором команды. Для остальных сотрудников остается прямая смена
+статуса в storefront (`/api/employee/*`). Устройство контура - в
+[ADR-0001](../../packages/event_contracts/docs/ADR-0001-order-transition-command-plane.md), разбор команд,
+которым нужен оператор, - в [runbook-0008](docs/runbook-0008-command-plane.md).
+
+## Авторизация
+
+Storefront остается единственным владельцем штатной роли сотрудника (`restaurant_operator` или
+`restaurant_manager`), Operations не читает `auth_user` и группы. BFF storefront выпускает на каждый вызов
+короткоживущий JWT с подписью RS256 (`sub`, `roles`, `authz_version`, `jti`, `exp`, `iss=identity`,
+`aud=operations`). Тот же токен вошедший сотрудник может получить сам через `POST /api/auth/employee-token`.
+`EmployeeJWTAuth` проверяет подпись по JWKS storefront (`GET /api/auth/jwks`) и требует штатную роль, которую
+подтверждает и локальная проекция прав. Автор берется из проверенного токена, а `actor_id` в теле запроса
+игнорируется. `/ops-api/*` открыт только сотрудникам, без авторизации доступен лишь `/health`, а OpenAPI-схема
+отдается только вне production.
+
+Каждый запрос требует, чтобы проекция `EmployeeAuthorization` совпадала с `authz_version` токена при активных
+роли и пользователе. Неизвестная или устаревшая проекция означает отказ, непрочитанная - ошибку сервера, но не
+доступ. Отзыв роли действует, когда событие `identity.authz_changed.v1` дошло до проекции; до этого внешняя
+граница - срок жизни токена, по умолчанию 600 с ([ops/identity/README.md](../../ops/identity/README.md)). Заказ
+в этом окне не изменится: storefront перепроверяет роль и версию сотрудника, когда применяет команду.
+
+## Запуск и тесты
+
+Operations поднимается вместе со всем dev-стеком (см. корневой README):
 
 ```bash
-# from the repo root
-docker compose up -d --build operations-db operations-api operations-consumer
+# из корня репозитория
+docker compose up -d --build
 
-# migrations are their own one-shot service; inspect the schema it applied
+# схема, которую применила миграция
 docker compose logs operations-migrate
 docker compose exec operations-db psql -U ops_user -d operations -c "\dt"
 
-# tests
-docker compose exec operations-api sh -lc "cd /srv/packages/event_contracts && python -m pytest"
-docker compose exec operations-api pytest
-
-# isolation test that needs the storefront DSN (CI/test profile only; never in prod/dev)
-docker compose -f compose.yaml -f compose.test.yaml up -d db operations-api
-docker compose -f compose.yaml -f compose.test.yaml exec operations-api \
-  pytest tests/test_isolation.py
-
-# shadow round-trip
-docker compose exec operations-api python manage.py publish_test_event --order-id 555999 --customer-id 88
+# проверочное событие из процесса, у которого есть сеть брокера; проекция должна появиться в базе
+docker compose exec operations-consumer python manage.py publish_test_event --order-id 555999 --customer-id 88
 docker compose exec operations-db psql -U ops_user -d operations -c \
   "SELECT source_order_id, status FROM operations_operationorder WHERE source_order_id=555999;"
 ```
 
-## Environment
+Тесты идут не в dev-стеке, а в отдельном проекте с уникальным именем: production-образ `operations-api` ставится
+без dev-зависимостей. Тестовый оверлей собирает dev-образ с подключенными исходниками, подключает тесты под
+bootstrap-пользователем, потому что они создают свою базу, и дает им адрес базы storefront для проверки изоляции.
 
-| Variable | Purpose |
+```bash
+P="asian-restaurant-ops-test-$(date +%s)"
+docker compose -p "$P" -f compose.yaml -f compose.test.yaml up -d --build operations-api
+docker compose -p "$P" -f compose.yaml -f compose.test.yaml exec operations-api pytest
+docker compose -p "$P" -f compose.yaml -f compose.test.yaml exec operations-api sh -c "cd /srv/packages/event_contracts && python -m pytest -p no:cacheprovider"
+docker compose -p "$P" -f compose.yaml -f compose.test.yaml down -v
+```
+
+Последняя команда удаляет тома только проекта, созданного первой.
+
+## Переменные окружения
+
+| Переменная | Назначение |
 |---|---|
-| `OPERATIONS_DATABASE_URL` | operations DB (ops role); never the storefront DB |
-| `OPERATIONS_SECRET_KEY` | own secret, not shared with storefront |
-| `OPERATIONS_RABBITMQ_URL` | consumer/api bus — operations vhost only |
-| `OPERATIONS_BRIDGE_CONSUME_URL` | bridge input — storefront vhost (adapter user) |
-| `OPERATIONS_BRIDGE_PUBLISH_URL` | bridge output — operations vhost (adapter user) |
-| `IDENTITY_JWKS_URL` | Identity public keys for JWT verification |
+| `OPERATIONS_DATABASE_URL` | база Operations под runtime-ролью, никогда не база storefront |
+| `OPERATIONS_SECRET_KEY` | собственный секрет, не общий со storefront |
+| `OPERATIONS_REDIS_URL` | хранилище лимитов новых команд |
+| `OPERATIONS_RABBITMQ_URL` | потребитель проекций, только vhost `operations` |
+| `OPERATIONS_COMMANDS_RABBITMQ_URL` | издатель команд: vhost `storefront`, запись только в `commands` |
+| `OPERATIONS_BRIDGE_CONSUME_URL` | вход bridge: vhost `storefront`, пользователь адаптера |
+| `OPERATIONS_BRIDGE_PUBLISH_URL` | выход bridge: vhost `operations`, пользователь адаптера |
+| `IDENTITY_JWKS_URL` | публичные ключи storefront для проверки JWT |
 
-## Auth
+## Состояние
 
-Identity/storefront remains the sole owner of employee role and the
-`restaurant_operator` or `restaurant_manager` role. Operations does not read
-`auth_user`/`groups`. Staff
-exchange their session for a short-lived, RS256-signed JWT (`sub`, `roles`,
-`authz_version`, `jti`, `exp`, `iss=identity`, `aud=operations`) at
-`POST /api/auth/employee-token`; `EmployeeJWTAuth` verifies it against Identity's
-JWKS (`GET /api/auth/jwks`) and requires a staff role that the local authorization
-projection also grants. The actor
-is taken from the verified token, never from a browser-supplied id: an `actor_id` in a request
-body is ignored. `/ops-api/*` is staff-only; only `/health` is open, and the OpenAPI schema is served
-outside production only. A transition is requested
-with `POST /ops-api/orders/{order_id}/transition-commands` carrying an `Idempotency-Key` header,
-and its outcome is read back from `GET /ops-api/commands/{command_id}`, scoped to its author. Revocation is enforced ahead of TTL: every request
-also requires the local `EmployeeAuthorization` projection to match the token's
-`authz_version` with an active role and user, failing closed on an unknown, stale, or
-unavailable projection (see `ops/identity/README.md` for the propagation SLO).
-
-## Status
-
-Phase 1 (foundation, shadow mode). Not wired to the frontend; legacy
-`/api/employee/*` remains the live path until later phases pass their checklists.
+Проекции и командный контур работают в dev-стеке и на одноразовых стендах, их прогоняют CI и смоуки. Публичного
+развертывания нет.
