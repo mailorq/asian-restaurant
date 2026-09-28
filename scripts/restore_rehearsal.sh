@@ -203,8 +203,8 @@ dc --profile provision down -v --remove-orphans >/dev/null 2>&1
 echo "== restore into an empty stand =="
 PROJ="$TARGET"
 dc up -d db operations-db >/dev/null 2>&1
-until_ok 60 dc exec -T db pg_isready -q || fail "the restored db never started"
-until_ok 60 dc exec -T operations-db pg_isready -q || fail "the restored operations-db never started"
+until_ok 60 dc exec -T db sh -c 'pg_isready -q -U "$POSTGRES_USER" -d "$POSTGRES_DB"' || fail "the restored db never started"
+until_ok 60 dc exec -T operations-db sh -c 'pg_isready -q -U "$POSTGRES_USER" -d "$POSTGRES_DB"' || fail "the restored operations-db never started"
 # roles first, so the restored objects are owned by the migrator and the runtime role gets its grants
 dc run --rm storefront-db-provision >/dev/null 2>&1 || fail "storefront roles were not provisioned"
 dc run --rm operations-db-provision >/dev/null 2>&1 || fail "operations roles were not provisioned"

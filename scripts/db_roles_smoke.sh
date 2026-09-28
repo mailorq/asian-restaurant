@@ -69,7 +69,7 @@ client() {  # client <password> <host> <user> <db> <sql>
     psql -X -q -h "$2" -U "$3" -d "$4" -v ON_ERROR_STOP=1 -c '\set VERBOSITY verbose' -c "$5" 2>&1
 }
 wait_ready() {
-  for _ in $(seq 1 60); do dc exec -T "$1" pg_isready -q >/dev/null 2>&1 && return 0; sleep 2; done
+  for _ in $(seq 1 60); do dc exec -T "$1" sh -c 'pg_isready -q -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1 && return 0; sleep 2; done
   fail "$1 never became ready"
 }
 
