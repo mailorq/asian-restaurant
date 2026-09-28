@@ -33,8 +33,9 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
+    # loopback only: the vite dev server is not meant to be reached from the local network
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173"
 
   # the management ui for local work; a port is published only through a network that is not internal
   rabbitmq:
