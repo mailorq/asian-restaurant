@@ -165,6 +165,11 @@ class Order(models.Model):
     idempotency_key = models.CharField(max_length=64)
     source_cart_id = models.CharField(max_length=64)
     source_cart_version = models.PositiveIntegerField()
+    # set with the order and cleared once what it bought is gone from that cart, so a failed or
+    # interrupted removal is finished by the next request to the cart
+    cart_clear_pending = models.BooleanField(default=False, db_default=False)
+    # what the checkout form asked for: a replay under the same key must ask for the same
+    checkout_fingerprint = models.CharField(max_length=64, blank=True, default="", db_default="")
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

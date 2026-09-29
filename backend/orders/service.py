@@ -1,6 +1,10 @@
+import hashlib
+import json
+import logging
 from decimal import Decimal
 
 from django.db import IntegrityError, transaction
+from ninja.errors import HttpError
 
 from cart import service as cart_service
 from menu import inventory
@@ -13,6 +17,8 @@ from orders.models import (
     OrderOutbox,
     OrderStatusHistory,
 )
+
+log = logging.getLogger(__name__)
 
 
 class CheckoutError(Exception):
@@ -71,6 +77,7 @@ def _create_order(
     payment_method,
     idempotency_key,
     recipient_name,
+    fingerprint,
 ):
     locked = {
         p.id: p
@@ -111,6 +118,8 @@ def _create_order(
         idempotency_key=idempotency_key,
         source_cart_id=source_cart_id,
         source_cart_version=cart_version,
+        cart_clear_pending=True,
+        checkout_fingerprint=fingerprint,
     )
 
     total = Decimal("0.00")
@@ -152,24 +161,56 @@ def _create_order(
     return order
 
 
-def _recover_uncleared_cart(user, order: Order) -> None:
+def settle_purchases(user) -> None:
+    # an order stays pending from its commit until what it bought is gone from the cart it was
+    # built from. the cart store records every order it subtracted, so a retry, a crash in between
+    # or two requests at once subtract it once, and whatever the cart gained since stays
     key = cart_service.user_key(user.id)
-    cart = cart_service.read_sync(key)
-    if not cart.items or cart.version != order.source_cart_version:
-        return
-    if _source_cart_id(user, cart.cart_id) != order.source_cart_id:
-        return
-    if cart.items != {item.product_id: item.quantity for item in order.items.all()}:
-        return
-    cart_service.clear_sync(key, cart.version, cart.cart_id)
+    pending = Order.objects.filter(user=user, cart_clear_pending=True).prefetch_related("items")
+    for order in pending:
+        cart_id = order.source_cart_id.removeprefix(f"u:{user.id}:")
+        bought = {item.product_id: item.quantity for item in order.items.all()}
+        cart_service.remove_purchased_sync(key, cart_id, order.pk, bought)
+        Order.objects.filter(pk=order.pk).update(cart_clear_pending=False)
+
+
+def _after_commit(user, order: Order) -> Order:
+    # the order is committed, so it is the answer whatever the cart store does now: it stays
+    # pending, and the next request to the cart or the next checkout subtracts what it bought
+    try:
+        settle_purchases(user)
+    except HttpError:
+        log.warning(
+            "cart not cleared after checkout",
+            extra={"order_id": order.pk, "user_id": order.user_id},
+        )
+    return order
+
+
+def _fingerprint(raw_address: str, payment_method: str, recipient_name: str) -> str:
+    form = [raw_address.strip(), payment_method, (recipient_name or "").strip()]
+    return hashlib.sha256(json.dumps(form, ensure_ascii=False).encode()).hexdigest()
+
+
+def _replayed(user, order: Order, fingerprint: str) -> Order:
+    # the same form sent again gets its order; other data under it is another intent, and answering
+    # it with this order would confirm details that were never saved
+    if order.checkout_fingerprint and order.checkout_fingerprint != fingerprint:
+        raise CheckoutError(
+            "checkout_replayed",
+            f"Заказ №{order.pk} уже оформлен с другими данными, проверьте его в разделе «Мои заказы»",
+        )
+    return _after_commit(user, order)
 
 
 def checkout(user, raw_address: str, payment_method: str, idempotency_key: str, recipient_name: str = "") -> Order:
+    fingerprint = _fingerprint(raw_address, payment_method, recipient_name)
     existing = Order.objects.filter(user=user, idempotency_key=idempotency_key).first()
     if existing is not None:
-        _recover_uncleared_cart(user, existing)
-        return existing
+        return _replayed(user, existing, fingerprint)
 
+    # what earlier orders bought leaves the cart before it is read, or this order would buy it again
+    settle_purchases(user)
     key = cart_service.user_key(user.id)
     cart = cart_service.read_sync(key)
     cart_items, cart_version = cart.items, cart.version
@@ -179,8 +220,7 @@ def checkout(user, raw_address: str, payment_method: str, idempotency_key: str, 
 
     existing = Order.objects.filter(source_cart_id=source_cart_id, source_cart_version=cart_version).first()
     if existing is not None:
-        _recover_uncleared_cart(user, existing)
-        return existing
+        return _replayed(user, existing, fingerprint)
 
     geo_result = _geocode_safe(raw_address)  # external http, kept out of the transaction
 
@@ -195,6 +235,7 @@ def checkout(user, raw_address: str, payment_method: str, idempotency_key: str, 
             payment_method,
             idempotency_key,
             recipient_name,
+            fingerprint,
         )
     except IntegrityError:
         # a concurrent submit won the unique(idempotency_key) / (source_cart_id, version) race
@@ -203,14 +244,12 @@ def checkout(user, raw_address: str, payment_method: str, idempotency_key: str, 
             or Order.objects.filter(source_cart_id=source_cart_id, source_cart_version=cart_version).first()
         )
         if existing is not None:
-            _recover_uncleared_cart(user, existing)
-            return existing
+            return _replayed(user, existing, fingerprint)
         raise
 
     # remove exactly what was bought: an item added mid-checkout stays, and the purchased
     # items never survive to be sold a second time by the next checkout
-    cart_service.remove_purchased_sync(key, cart.cart_id, cart_items)
-    return order
+    return _after_commit(user, order)
 
 
 def _restore_stock(order: Order, staff=None) -> None:

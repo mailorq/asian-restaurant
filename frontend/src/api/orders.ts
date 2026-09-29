@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { api } from "./client";
+import { ApiError, api } from "./client";
 import type { Cart } from "./cart";
 
 export type OrderStatus =
@@ -117,15 +117,23 @@ export function useCheckout() {
       address: string;
       payment_method: "cash" | "card";
       recipient_name: string;
+      idempotency_key: string;
     }) =>
       api<Order>("/orders/checkout", {
         method: "POST",
-        body: JSON.stringify({ ...vars, idempotency_key: crypto.randomUUID() }),
+        body: JSON.stringify(vars),
       }),
     onSuccess: () => {
       qc.setQueryData(["cart"], EMPTY_CART); // checkout clears the cart server-side
       qc.invalidateQueries({ queryKey: ["cart"] });
       qc.invalidateQueries({ queryKey: ["orders"] });
+    },
+    // an error does not prove that no order was placed, and a replayed form proves one was
+    onError: (err) => {
+      qc.invalidateQueries({ queryKey: ["orders"] });
+      if (err instanceof ApiError && (err.body as { code?: string } | null)?.code === "checkout_replayed") {
+        qc.invalidateQueries({ queryKey: ["cart"] });
+      }
     },
   });
 }

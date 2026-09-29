@@ -75,7 +75,7 @@ def test_the_identity_survives_writes_and_clearing_and_is_new_after_expiry(make_
     version = _run(cart_service.clear, key, None)
     assert cart_service.read_sync(key).cart_id == identity
     _run(cart_service.add, key, product.id, 2, version)
-    cart_service.remove_purchased_sync(key, identity, {product.id: 1})
+    cart_service.remove_purchased_sync(key, identity, 1, {product.id: 1})
     assert cart_service.read_sync(key).cart_id == identity
     state = cart_service.read_sync(key)
     assert cart_service.clear_sync(key, state.version, state.cart_id) is True

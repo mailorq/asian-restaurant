@@ -1,5 +1,6 @@
 import uuid
 
+from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.http import HttpResponse
 from ninja import Router, Status
@@ -9,6 +10,8 @@ from cart import service
 from cart.schemas import AddItemIn, CartConflictOut, CartOut, SetQtyIn
 from common.ratelimit import rate_limit
 from menu.models import Product
+from orders import service as order_service
+from orders.models import Order
 
 router = Router(tags=["cart"])
 
@@ -49,6 +52,10 @@ async def _resolve(request, response: HttpResponse) -> str:
     user = await request.auser()
     if user.is_authenticated:
         key = service.user_key(user.id)
+        # before the guest merge and any write: both move the cart on, and what an order bought
+        # has to leave it first, however the request that placed that order ended
+        if await Order.objects.filter(user_id=user.id, cart_clear_pending=True).aexists():
+            await sync_to_async(order_service.settle_purchases)(user)
         guest_id = _read_cookie(request)
         if guest_id:
             await service.merge_guest_into_user(service.guest_key(guest_id), key)

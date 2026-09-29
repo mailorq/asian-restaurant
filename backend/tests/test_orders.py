@@ -3,6 +3,7 @@ import json
 import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from redis.exceptions import RedisError
 
 from cart import service as cart_service
 from orders import service as order_service
@@ -85,13 +86,16 @@ def test_checkout_removes_only_purchased_items_when_cart_changed_midway(
     assert items == {added.id: 1}  # the concurrent addition is preserved
 
 
-def test_retry_after_lost_response_clears_the_uncleared_cart(user, make_product, seed_cart):
+def test_retry_after_lost_response_clears_the_uncleared_cart(
+    user, make_product, seed_cart, monkeypatch
+):
     product = make_product(price="100.00", stock=10)
     seed_cart(user.id, {product.id: 2}, version=1)
     key = cart_service.user_key(user.id)
+    store = cart_service._sync_redis
+    monkeypatch.setattr(cart_service, "_sync_redis", lambda: _PurchasedClearDown(store()))
     order = order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-retry-1")
-
-    seed_cart(user.id, {product.id: 2}, version=order.source_cart_version)
+    monkeypatch.setattr(cart_service, "_sync_redis", store)
 
     again = order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-retry-1")
 
@@ -114,6 +118,174 @@ def test_retry_does_not_wipe_a_rebuilt_cart_at_the_same_version(user, make_produ
 
     items = cart_service.read_sync(key).items
     assert items == {other.id: 1}
+
+
+class _PurchasedClearDown:
+    # the cart store drops the connection exactly when checkout removes what it has just sold
+    def __init__(self, real):
+        self._real = real
+
+    def eval(self, script, *args, **kwargs):
+        if script == cart_service._REMOVE_PURCHASED_LUA:
+            raise RedisError("down")
+        return self._real.eval(script, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class _CartStoreDown:
+    def __getattr__(self, name):
+        def fail(*args, **kwargs):
+            raise RedisError("down")
+
+        return fail
+
+
+def _placed_while_the_clear_fails(api, monkeypatch, key="idem-uncleared"):
+    store = cart_service._sync_redis
+    monkeypatch.setattr(cart_service, "_sync_redis", lambda: _PurchasedClearDown(store()))
+    resp = _checkout(api, key=key)
+    monkeypatch.setattr(cart_service, "_sync_redis", store)
+    assert resp.status_code == 200
+    return Order.objects.get(pk=resp.json()["id"])
+
+
+def _bought(order):
+    return {item.product_id: item.quantity for item in order.items.all()}
+
+
+def _lines(cart):
+    return [(line["product_id"], line["quantity"]) for line in cart["items"]]
+
+
+def test_an_order_committed_before_the_cart_clear_failed_is_answered_as_placed(
+    api, user, make_product, seed_cart, monkeypatch
+):
+    product = make_product(price="100.00", stock=10)
+    seed_cart(user.id, {product.id: 2}, version=1)
+    api.force_login(user)
+
+    order = _placed_while_the_clear_fails(api, monkeypatch)
+
+    assert order.cart_clear_pending is True
+    assert cart_service.read_sync(cart_service.user_key(user.id)).items == {product.id: 2}
+
+
+def test_the_next_cart_read_clears_a_purchased_cart_before_clamping_it(
+    api, user, make_product, seed_cart, monkeypatch
+):
+    # three in stock and two bought: a render clamps the uncleared line to the one left and
+    # moves the version past the order, so a resubmit would place the line again
+    product = make_product(price="100.00", stock=3)
+    seed_cart(user.id, {product.id: 2}, version=1)
+    api.force_login(user)
+    order = _placed_while_the_clear_fails(api, monkeypatch)
+
+    cart = api.get("/api/cart").json()
+    again = _checkout(api, key="idem-uncleared-next")
+
+    assert cart["items"] == [] and cart["adjustments"] == []
+    assert again.status_code == 422 and again.json()["code"] == "empty_cart"
+    assert list(Order.objects.filter(user=user)) == [order]
+    order.refresh_from_db()
+    assert order.cart_clear_pending is False
+    product.refresh_from_db()
+    assert product.stock_quantity == 1
+
+
+@pytest.mark.parametrize("same_product", [False, True], ids=["another product", "more of the bought one"])
+def test_a_write_before_the_next_read_keeps_the_new_line_and_drops_the_bought_one(
+    api, user, make_product, seed_cart, monkeypatch, same_product
+):
+    bought = make_product(price="100.00", stock=10)
+    added = bought if same_product else make_product(price="50.00", stock=10)
+    seed_cart(user.id, {bought.id: 2}, version=1)
+    api.force_login(user)
+    first = _placed_while_the_clear_fails(api, monkeypatch)
+
+    write = api.post("/api/cart/items", data=json.dumps({"product_id": added.id, "quantity": 1}))
+    second = _checkout(api, key="idem-after-write")
+
+    assert write.status_code == 200
+    assert _lines(write.json()) == [(added.id, 1)]
+    assert second.status_code == 200
+    assert _bought(Order.objects.get(pk=second.json()["id"])) == {added.id: 1}
+    assert _bought(first) == {bought.id: 2}
+    bought.refresh_from_db()
+    assert bought.stock_quantity == (7 if same_product else 8)
+
+
+def test_a_guest_cart_merged_on_the_next_read_keeps_its_lines_and_drops_the_bought_ones(
+    api, client, user, make_product, seed_cart, monkeypatch
+):
+    bought = make_product(price="100.00", stock=10)
+    guest_line = make_product(price="50.00", stock=10)
+    seed_cart(user.id, {bought.id: 2}, version=1)
+    api.force_login(user)
+    _placed_while_the_clear_fails(api, monkeypatch)
+    client.logout()
+    assert api.post("/api/cart/items", data=json.dumps({"product_id": guest_line.id})).status_code == 200
+    api.force_login(user)
+
+    cart = api.get("/api/cart").json()
+    second = _checkout(api, key="idem-after-merge")
+
+    assert _lines(cart) == [(guest_line.id, 1)]
+    assert second.status_code == 200
+    assert _bought(Order.objects.get(pk=second.json()["id"])) == {guest_line.id: 1}
+    bought.refresh_from_db()
+    assert bought.stock_quantity == 8
+
+
+def test_a_removal_repeated_after_a_crash_subtracts_once(api, user, make_product, seed_cart):
+    # the cart was cleared but the process died before the order was marked, and one more of
+    # the bought product went into the cart since
+    product = make_product(price="100.00", stock=10)
+    seed_cart(user.id, {product.id: 2}, version=1)
+    api.force_login(user)
+    order = Order.objects.get(pk=_checkout(api, key="idem-crash").json()["id"])
+    api.post("/api/cart/items", data=json.dumps({"product_id": product.id, "quantity": 1}))
+    Order.objects.filter(pk=order.pk).update(cart_clear_pending=True)
+
+    cart = api.get("/api/cart").json()
+
+    assert _lines(cart) == [(product.id, 1)]
+    order.refresh_from_db()
+    assert order.cart_clear_pending is False
+
+
+def test_a_replay_is_answered_with_its_order_while_the_cart_store_is_down(
+    api, user, make_product, seed_cart, monkeypatch
+):
+    product = make_product(price="100.00", stock=10)
+    seed_cart(user.id, {product.id: 1}, version=1)
+    api.force_login(user)
+    first = _checkout(api, key="idem-replay-down")
+    monkeypatch.setattr(cart_service, "_sync_redis", lambda: _CartStoreDown())
+
+    again = _checkout(api, key="idem-replay-down")
+
+    assert again.status_code == 200
+    assert again.json()["id"] == first.json()["id"]
+    assert Order.objects.filter(user=user).count() == 1
+
+
+def test_a_replay_with_other_details_is_refused_and_names_the_order(api, user, make_product, seed_cart):
+    # the answer to the first submit was lost, and the form was edited before it was sent again
+    product = make_product(price="100.00", stock=10)
+    seed_cart(user.id, {product.id: 1}, version=1)
+    api.force_login(user)
+    first = _checkout(api, address="ул. Пушкина, 12", key="idem-edited")
+
+    edited = _checkout(api, address="ул. Лермонтова, 7", key="idem-edited")
+    same = _checkout(api, address="ул. Пушкина, 12", key="idem-edited")
+
+    assert edited.status_code == 409
+    assert edited.json()["code"] == "checkout_replayed"
+    assert f"№{first.json()['id']}" in edited.json()["message"]
+    assert same.status_code == 200 and same.json()["id"] == first.json()["id"]
+    assert Order.objects.get(user=user).delivery_address.address == "ул. Пушкина, 12"
 
 
 def test_checkout_requires_auth(client, user, make_product, seed_cart):

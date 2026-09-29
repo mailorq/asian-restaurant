@@ -60,7 +60,7 @@ def checkout(request, data: CheckoutIn):
             request.auth, data.address, data.payment_method, data.idempotency_key, data.recipient_name
         )
     except service.CheckoutError as exc:
-        status = 409 if exc.code == "cart_changed" else 422
+        status = 409 if exc.code in ("cart_changed", "checkout_replayed") else 422
         return Status(status, {"code": exc.code, "message": exc.message, "items": exc.items})
     return Status(200, _with_relations(Order.objects).get(pk=order.pk))
 

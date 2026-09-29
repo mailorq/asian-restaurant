@@ -26,6 +26,8 @@ export function CartModal() {
   const { data: lastAddress } = useLastAddress(Boolean(user));
   const verify = useVerifyAddress();
   const [step, setStep] = useState<Step>("cart");
+  // one key per visit to the form: a resubmit after an answer that never arrived is the same order
+  const [checkoutKey, setCheckoutKey] = useState("");
   const [payment, setPayment] = useState<"cash" | "card">("cash");
   const [address, setAddress] = useState("");
   const [recipientName, setRecipientName] = useState("");
@@ -60,11 +62,21 @@ export function CartModal() {
     });
   }
 
+  function openCheckout() {
+    setCheckoutKey(crypto.randomUUID());
+    setStep("checkout");
+  }
+
   function placeOrder(e: React.FormEvent) {
     e.preventDefault();
     if (!user || checkout.isPending) return;
     checkout.mutate(
-      { address: address.trim(), payment_method: payment, recipient_name: recipientName.trim() },
+      {
+        address: address.trim(),
+        payment_method: payment,
+        recipient_name: recipientName.trim(),
+        idempotency_key: checkoutKey,
+      },
       {
         onSuccess: (order) => {
           notify(`Заказ №${order.id} оформлен`);
@@ -72,8 +84,13 @@ export function CartModal() {
           navigate({ name: "orders" });
         },
         onError: (err) => {
-          if (err instanceof ApiError && err.status === 409) {
-            const body = err.body as { message?: string } | null;
+          const body = err instanceof ApiError ? (err.body as { code?: string; message?: string } | null) : null;
+          if (err instanceof ApiError && err.status === 409 && body?.code === "checkout_replayed") {
+            // this form already placed an order, with the details it was first sent with
+            notify(body.message ?? "Заказ уже оформлен", "error");
+            close();
+            navigate({ name: "orders" });
+          } else if (err instanceof ApiError && err.status === 409) {
             notify(body?.message ?? "Корзина изменилась — проверьте состав", "error");
             setStep("cart");
           } else if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
@@ -106,7 +123,7 @@ export function CartModal() {
               <span className="tnum text-xl font-semibold">{formatPrice(total)}</span>
             </div>
             <button
-              onClick={() => setStep("checkout")}
+              onClick={openCheckout}
               className="h-12 w-full rounded-xl bg-primary font-medium text-primary-contrast transition-[background-color,transform] duration-200 hover:bg-primary-hover active:scale-[0.99]"
             >
               Оформить заказ
