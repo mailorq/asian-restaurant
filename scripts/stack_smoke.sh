@@ -21,6 +21,8 @@ cleanup() {
   echo "== teardown (only $PROJ) =="
   docker rm -f "${PROJ}_placeholder" "${PROJ}_geocoder" >/dev/null 2>&1 || true
   dc --profile provision down -v --remove-orphans >/dev/null 2>&1 || true
+  # the application images of this run carry its project as their tag
+  docker image rm "asian-restaurant/storefront:$PROJ" "asian-restaurant/operations:$PROJ" "asian-restaurant/frontend:$PROJ" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -44,6 +46,7 @@ openssl genrsa -out "$WORK/identity.pem" 2048 2>/dev/null
 chmod 644 "$WORK/identity.pem"
 STOREFRONT_MQ_PASSWORD="$(rnd)" OPERATIONS_MQ_PASSWORD="$(rnd)" BRIDGE_MQ_PASSWORD="$(rnd)" OPERATIONS_COMMANDS_MQ_PASSWORD="$(rnd)"
 cat > "$ENV_FILE" <<EOF
+SOURCE_REVISION=$PROJ
 POSTGRES_DB=storefront
 POSTGRES_USER=smoke_boot
 POSTGRES_PASSWORD=$(rnd)

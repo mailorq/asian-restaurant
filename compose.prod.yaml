@@ -5,6 +5,12 @@
 # application processes reach postgres as their runtime role (DML only); only the migration jobs use the migrator
 x-storefront-runtime-dsn: &storefront-runtime-dsn postgres://storefront_runtime:${STOREFRONT_DB_RUNTIME_PASSWORD:?set STOREFRONT_DB_RUNTIME_PASSWORD}@db:5432/${POSTGRES_DB:?set POSTGRES_DB}
 x-operations-runtime-dsn: &operations-runtime-dsn postgres://operations_runtime:${OPERATIONS_DB_RUNTIME_PASSWORD:?set OPERATIONS_DB_RUNTIME_PASSWORD}@operations-db:5432/${OPERATIONS_DB_NAME:?set OPERATIONS_DB_NAME}
+# every application service runs the image of the commit being released, one image per codebase: a new commit is a tag
+# compose has not built yet, so a release can neither reuse the previous build nor start the migration job and the
+# processes from different builds
+x-storefront-image: &storefront-image asian-restaurant/storefront:${SOURCE_REVISION:?set SOURCE_REVISION to the commit being released}
+x-operations-image: &operations-image asian-restaurant/operations:${SOURCE_REVISION:?set SOURCE_REVISION to the commit being released}
+x-frontend-image: &frontend-image asian-restaurant/frontend:${SOURCE_REVISION:?set SOURCE_REVISION to the commit being released}
 
 x-storefront-prod-env: &storefront-prod-env
   DJANGO_PRODUCTION: "1"
@@ -105,11 +111,13 @@ services:
     ports: !override ["127.0.0.1:9090:9090"]
 
   frontend:
+    image: *frontend-image
     # loopback only: an external ingress terminates TLS and forwards here. published on 0.0.0.0 this serves the login form over plain HTTP
     ports: !override ["127.0.0.1:80:8080"]
 
   # migrations run as their own deployment step; the runtime services wait for them
   storefront-migrate:
+    image: *storefront-image
     secrets:
       - identity_jwt_private_key
     env_file: !reset null
@@ -120,6 +128,7 @@ services:
     volumes: !override []
 
   operations-migrate:
+    image: *operations-image
     environment:
       OPERATIONS_PRODUCTION: "1"
       OPERATIONS_DEBUG: "0"
@@ -130,6 +139,7 @@ services:
 
   backend:    # signing key is a read-only Docker secret file, never an env var; dev mount dropped and
     # base `env_file: [.env]` reset so the production render never depends on repo-root .env
+    image: *storefront-image
     secrets:
       - identity_jwt_private_key
     env_file: !reset null
@@ -140,6 +150,7 @@ services:
   # transactional outbox relay is a storefront Django process: it starts under the same
   # production guard and needs the signing-key secret to satisfy the guard's key-file check
   relay:
+    image: *storefront-image
     secrets:
       - identity_jwt_private_key
     env_file: !reset null
@@ -147,6 +158,7 @@ services:
 
   # command consumer is a storefront Django process: same production guard and signing-key secret as the other two
   commands-consumer:
+    image: *storefront-image
     secrets:
       - identity_jwt_private_key
     env_file: !reset null
@@ -157,10 +169,12 @@ services:
   # RestaurantOrder, so this parallel consumer is not run in production: it is gated behind a
   # profile production never activates, and its base `env_file: [.env]` is reset.
   ops:
+    image: *storefront-image
     profiles: ["legacy-projection"]
     env_file: !reset null
 
   operations-api:
+    image: *operations-image
     environment:
       OPERATIONS_PRODUCTION: "1"
       OPERATIONS_DEBUG: "0"
@@ -170,6 +184,7 @@ services:
       OPERATIONS_RABBITMQ_URL: ${OPERATIONS_RABBITMQ_URL:?set OPERATIONS_RABBITMQ_URL}
 
   operations-consumer:
+    image: *operations-image
     environment:
       OPERATIONS_PRODUCTION: "1"
       OPERATIONS_DEBUG: "0"
@@ -179,6 +194,7 @@ services:
       OPERATIONS_RABBITMQ_URL: ${OPERATIONS_RABBITMQ_URL:?set OPERATIONS_RABBITMQ_URL}
 
   operations-bridge:
+    image: *operations-image
     environment:
       OPERATIONS_PRODUCTION: "1"
       OPERATIONS_DEBUG: "0"
@@ -189,6 +205,7 @@ services:
       OPERATIONS_BRIDGE_PUBLISH_URL: ${OPERATIONS_BRIDGE_PUBLISH_URL:?set OPERATIONS_BRIDGE_PUBLISH_URL}
 
   commands-relay:
+    image: *operations-image
     environment:
       OPERATIONS_PRODUCTION: "1"
       OPERATIONS_DEBUG: "0"

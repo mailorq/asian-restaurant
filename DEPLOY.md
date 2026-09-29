@@ -17,28 +17,40 @@
 dc() {
   : "${PROD_ENV_FILE:?set PROD_ENV_FILE to the production secrets file}"
   test -r "$PROD_ENV_FILE" || { echo "PROD_ENV_FILE is not readable" >&2; return 1; }
-  local repo_root env_file
+  local repo_root env_file revision
   repo_root="$(realpath .)"
   env_file="$(realpath "$PROD_ENV_FILE")"
   # resolved first, so neither a relative path nor a symlink leading back in passes for external
   case "$env_file" in
     "$repo_root"/*) echo "PROD_ENV_FILE must live outside the checkout" >&2; return 1 ;;
   esac
+  # the images carry the commit as their tag, so an uncommitted change would be built under a tag that names other code
+  git -C "$repo_root" diff --quiet HEAD -- || { echo "the checkout has uncommitted changes, a release deploys a commit" >&2; return 1; }
+  revision="$(git -C "$repo_root" rev-parse HEAD)" || return 1
   # the resolved path, so a symlink swapped after the check cannot redirect compose
-  docker compose --env-file "$env_file" -f compose.yaml -f compose.prod.yaml "$@"
+  SOURCE_REVISION="$revision" docker compose --env-file "$env_file" -f compose.yaml -f compose.prod.yaml "$@"
 }
 
-# 1. поднять брокер и выдать пользователей и права; шаг обязан завершиться с кодом 0
+# 1. собрать образы приложения этой ревизии; миграции и рантайм запускаются из одного образа на кодовую базу
+dc build
+
+# 2. поднять брокер и выдать пользователей и права; шаг обязан завершиться с кодом 0
 dc up -d rabbitmq
 dc --profile provision run --rm rabbitmq-provision
 
-# 2. применить миграции схемы обеим базам, до старта рантайма; роли базы данных провижинятся перед ними сами
+# 3. применить миграции схемы обеим базам, до старта рантайма; роли базы данных провижинятся перед ними сами
 dc up --exit-code-from storefront-migrate storefront-migrate
 dc up --exit-code-from operations-migrate operations-migrate
 
-# 3. поднять рантайм
+# 4. поднять рантайм
 dc up -d
 ```
+
+Образы приложения называются `asian-restaurant/storefront`, `asian-restaurant/operations` и
+`asian-restaurant/frontend`, тег - хеш коммита рабочей копии. Новый коммит дает тег, которого на хосте еще нет,
+поэтому ни одна команда релиза не может взять сборку прошлого релиза, а мигратор и процессы одной кодовой
+базы запускаются из одного образа. Незакоммиченные изменения `dc()` отвергает: иначе под тегом коммита собрался
+бы другой код. Образы прошлых релизов остаются на хосте для отката, удаляют их вручную.
 
 Каталог и остатки в релиз не входят: они принадлежат работающему магазину. На новой установке их
 заводят один раз, см. «Первая установка: каталог и остатки».
@@ -473,10 +485,10 @@ geocoder. У остальных сервисов маршрута из сете�
    через `uv sync --locked`, который отказывает, если lock отстал от `pyproject.toml`. Вне lock остаются пакеты
    `apt-get` в backend (текущее состояние репозиториев Debian) и `setuptools`, которым собирается event_contracts
    (версия закреплена, хеша нет).
-3. **Развертывается новая сборка, а не проверенный артефакт.** `dc up -d` собирает образы приложения на хосте из
-   рабочей копии. Чтобы на хост попал ровно тот образ, который прошел CI и smoke, его собирают один раз, публикуют
-   в реестр и указывают в compose по digest образа приложения. Реестр выбирается вместе с площадкой, до этого
-   гарантия ограничена пунктом 1.
+3. **Развертывается новая сборка, а не проверенный артефакт.** `dc build` собирает образы приложения на хосте из
+   рабочей копии, с тегом ее коммита. Чтобы на хост попал ровно тот образ, который прошел CI и smoke, его
+   собирают один раз, публикуют в реестр и указывают в compose по digest образа приложения. Реестр выбирается
+   вместе с площадкой, до этого гарантия ограничена пунктом 1.
 
 Обновление digest базового образа, например после выхода исправлений безопасности:
 

@@ -30,6 +30,7 @@ export OPERATIONS_COMMANDS_MQ_PASSWORD="$(rnd)"
 printf 'throwaway\n' > "$WORK/identity.pem"
 # the whole production render has to interpolate, although only the broker is started
 cat > "$ENV_FILE" <<EOF
+SOURCE_REVISION=$PROJ
 RABBITMQ_ADMIN_USER=$RABBITMQ_ADMIN_USER
 RABBITMQ_ADMIN_PASSWORD=$RABBITMQ_ADMIN_PASSWORD
 RABBITMQ_ERLANG_COOKIE=$(rnd)

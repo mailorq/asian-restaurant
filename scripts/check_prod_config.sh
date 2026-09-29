@@ -21,6 +21,7 @@ MANDATORY=(
   STOREFRONT_MQ_PASSWORD OPERATIONS_MQ_PASSWORD BRIDGE_MQ_PASSWORD OPERATIONS_COMMANDS_MQ_PASSWORD
   OPERATIONS_SECRET_KEY OPERATIONS_ALLOWED_HOSTS OPERATIONS_RABBITMQ_URL
   OPERATIONS_BRIDGE_CONSUME_URL OPERATIONS_BRIDGE_PUBLISH_URL OPERATIONS_COMMANDS_RABBITMQ_URL
+  SOURCE_REVISION
 )
 
 # CI dummy values (non-dev) so the render can complete; the negative loop below removes them one
@@ -43,6 +44,7 @@ export OPERATIONS_RABBITMQ_URL=amqp://u:p@rabbitmq:5672/operations
 export OPERATIONS_BRIDGE_CONSUME_URL=amqp://u:p@rabbitmq:5672/storefront
 export OPERATIONS_BRIDGE_PUBLISH_URL=amqp://u:p@rabbitmq:5672/operations
 export OPERATIONS_COMMANDS_RABBITMQ_URL=amqp://u:p@rabbitmq:5672/storefront
+export SOURCE_REVISION=ci-release
 
 PROD=(--env-file "$EMPTY_ENV" -f compose.yaml -f compose.prod.yaml)
 rendered=$(docker compose "${PROD[@]}" config)
@@ -96,7 +98,13 @@ for dockerfile in ("backend/Dockerfile", "services/order_operations/Dockerfile",
     refs += [(dockerfile, ref) for ref in re.findall(r"^#\s*syntax=(\S+)", text, re.M)]
     refs += [(dockerfile, ref) for ref in re.findall(r"^COPY\s+--from=(\S+)", text, re.M) if ref not in stages]
 for path in [*sorted(pathlib.Path(".").glob("compose*.yaml")), pathlib.Path(".github/workflows/ci.yml")]:
-    refs += [(str(path), ref) for ref in re.findall(r"^\s*image:\s*(\S+)", path.read_text(encoding="utf-8"), re.M)]
+    text = path.read_text(encoding="utf-8")
+    anchors = dict(re.findall(r"&([\w-]+)\s+(\S+)", text))
+    for ref in re.findall(r"^\s*image:\s*(\S+)", text, re.M):
+        ref = anchors.get(ref[1:], ref) if ref.startswith("*") else ref
+        # the application images are built on the host and tagged with the release commit, never pulled
+        if not ref.startswith("asian-restaurant/"):
+            refs.append((str(path), ref))
 repos = {ref.split("@")[0].rsplit(":", 1)[0] for _, ref in refs}
 known = re.compile(r"(?<![\w./@-])((?:%s):[\w.-]+(?:@sha256:[0-9a-f]{64})?)(?![\w/:])" % "|".join(map(re.escape, sorted(repos))))
 for path in [pathlib.Path(".github/workflows/ci.yml"), *sorted(pathlib.Path("scripts").glob("*.sh"))]:
@@ -224,6 +232,37 @@ if unguarded:
     print("FAIL: these start without waiting for their migration job: " + ", ".join(unguarded))
     raise SystemExit(1)
 MIGRATE
+
+# a second release must run its own commit: an image named by service is reused as is by the next release, while a tag
+# per revision is one compose has to build, and one image per codebase keeps the migration job and the processes on one build
+RENDERED_JSON="$rendered_json" python3 - <<'RELEASEIMAGE' || fail=1
+import json, os
+
+revision = os.environ["SOURCE_REVISION"]
+by_build, by_image, untagged = {}, {}, []
+for name, spec in sorted(json.loads(os.environ["RENDERED_JSON"])["services"].items()):
+    build = spec.get("build")
+    if not build:
+        continue
+    image = spec.get("image") or ""
+    if not image.endswith(":" + revision):
+        untagged.append(f"{name} ({image or 'no image'})")
+    key = (build.get("context"), build.get("dockerfile"), build.get("target"))
+    by_build.setdefault(key, set()).add(image)
+    by_image.setdefault(image, set()).add(key)
+failed = []
+if untagged:
+    failed.append("these build an image not tagged with the release revision: " + ", ".join(untagged))
+split = [f"{key[1] or 'Dockerfile'} {key[2]}: {sorted(images)}" for key, images in by_build.items() if len(images) > 1]
+if split:
+    failed.append("one build runs as several images: " + "; ".join(split))
+shared = [image for image, keys in by_image.items() if len(keys) > 1]
+if shared:
+    failed.append("one image name is claimed by several builds: " + ", ".join(sorted(shared)))
+if failed:
+    print("FAIL: " + "; ".join(failed))
+    raise SystemExit(1)
+RELEASEIMAGE
 
 # application images run production as 10001 and nginx as 101, compose keeps it, and only backend and media-init write media
 RENDERED_JSON="$rendered_json" python3 - <<'NONROOT' || fail=1
@@ -505,6 +544,12 @@ required = {
         r'env_file="\$\(realpath "\$PROD_ENV_FILE"\)"',
     "a file resolving inside the checkout refuses the call":
         r'case "\$env_file" in\s*\n\s*"\$repo_root"/\*\)[^\n]*return 1',
+    "uncommitted changes refuse the call":
+        r'git -C "\$repo_root" diff --quiet HEAD --[^\n]*return 1',
+    "the revision is the commit checked out":
+        r'revision="\$\(git -C "\$repo_root" rev-parse HEAD\)"',
+    "the compose call tags the images with that revision":
+        r'SOURCE_REVISION="\$revision" docker compose',
 }
 missing = [what for what, pattern in required.items() if not re.search(pattern, body, re.S)]
 if missing:
@@ -516,12 +561,12 @@ if outside:
     raise SystemExit(1)
 # rabbitmq-provision sits in a profile, so a plain `dc up -d` never grants the users and permissions
 release = [ln.strip() for ln in doc.splitlines() if ln.startswith("dc ")]
-steps = ["dc up -d rabbitmq", "dc --profile provision run --rm rabbitmq-provision",
+steps = ["dc build", "dc up -d rabbitmq", "dc --profile provision run --rm rabbitmq-provision",
          "dc up --exit-code-from storefront-migrate storefront-migrate",
          "dc up --exit-code-from operations-migrate operations-migrate", "dc up -d"]
 at = [release.index(step) if step in release else -1 for step in steps]
 if -1 in at or at != sorted(at):
-    print("FAIL: DEPLOY.md does not provision the broker before migrations and the runtime, in this order: "
+    print("FAIL: DEPLOY.md does not build, provision the broker, migrate and start the runtime, in this order: "
           + "; ".join(steps))
     raise SystemExit(1)
 DEPLOYDOC

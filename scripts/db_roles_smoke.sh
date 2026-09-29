@@ -17,7 +17,7 @@ fi
 ENV_FILE="$WORK/production.env"
 
 dc() { docker compose -p "$PROJ" --env-file "$ENV_FILE" -f compose.yaml -f compose.prod.yaml "$@"; }
-cleanup() { echo "== teardown (only $PROJ) =="; docker rm -f "${PROJ}_stale" >/dev/null 2>&1 || true; dc down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$WORK"; }
+cleanup() { echo "== teardown (only $PROJ) =="; docker rm -f "${PROJ}_stale" >/dev/null 2>&1 || true; dc down -v --remove-orphans >/dev/null 2>&1 || true; docker image rm "asian-restaurant/storefront:$PROJ" "asian-restaurant/operations:$PROJ" >/dev/null 2>&1 || true; rm -rf "$WORK"; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 rnd() { head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
@@ -27,6 +27,7 @@ SF_BOOT=smoke_boot SF_BOOT_PW="$(rnd)" SF_MIGRATOR_PW="$(rnd)" SF_RUNTIME_PW="$(
 OPS_BOOT=ops_user OPS_BOOT_PW=ops_pass OPS_MIGRATOR_PW="$(rnd)" OPS_RUNTIME_PW="$(rnd)"
 printf 'throwaway\n' > "$WORK/identity.pem"
 cat > "$ENV_FILE" <<EOF
+SOURCE_REVISION=$PROJ
 POSTGRES_DB=storefront
 POSTGRES_USER=$SF_BOOT
 POSTGRES_PASSWORD=$SF_BOOT_PW

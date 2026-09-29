@@ -17,7 +17,7 @@ fi
 ENV_FILE="$WORK/production.env"
 
 dc() { docker compose -p "$PROJ" --env-file "$ENV_FILE" -f compose.yaml -f compose.prod.yaml -f "$WORK/pool-of-one.yaml" "$@"; }
-cleanup() { echo "== teardown (only $PROJ) =="; dc down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$WORK"; }
+cleanup() { echo "== teardown (only $PROJ) =="; dc down -v --remove-orphans >/dev/null 2>&1 || true; docker image rm "asian-restaurant/storefront:$PROJ" "asian-restaurant/operations:$PROJ" >/dev/null 2>&1 || true; rm -rf "$WORK"; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 rnd() { head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
@@ -34,6 +34,7 @@ openssl genrsa -out "$WORK/identity.pem" 2048 2>/dev/null
 chmod 644 "$WORK/identity.pem"
 OPS_BOOT=smoke_ops_boot
 cat > "$ENV_FILE" <<EOF
+SOURCE_REVISION=$PROJ
 POSTGRES_DB=storefront
 POSTGRES_USER=smoke_boot
 POSTGRES_PASSWORD=$(rnd)

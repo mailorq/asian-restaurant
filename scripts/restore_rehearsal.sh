@@ -22,6 +22,8 @@ dc() { docker compose -p "$PROJ" --env-file "$ENV_FILE" -f compose.yaml -f compo
 cleanup() {
   echo "== teardown (only $SOURCE and $TARGET) =="
   for PROJ in "$SOURCE" "$TARGET"; do dc --profile provision down -v --remove-orphans >/dev/null 2>&1 || true; done
+  # both stands run the application images of this run, tagged with the source project
+  docker image rm "asian-restaurant/storefront:$SOURCE" "asian-restaurant/operations:$SOURCE" "asian-restaurant/frontend:$SOURCE" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -46,6 +48,7 @@ SF_BOOT=smoke_boot SF_BOOT_PW="$(rnd)" OPS_BOOT=smoke_ops_boot OPS_BOOT_PW="$(rn
 STOREFRONT_MQ_PASSWORD="$(rnd)" OPERATIONS_MQ_PASSWORD="$(rnd)" BRIDGE_MQ_PASSWORD="$(rnd)" OPERATIONS_COMMANDS_MQ_PASSWORD="$(rnd)"
 # one secrets file for both stands, as a restore on a new host takes the secrets of the old one
 cat > "$ENV_FILE" <<EOF
+SOURCE_REVISION=$SOURCE
 POSTGRES_DB=storefront
 POSTGRES_USER=$SF_BOOT
 POSTGRES_PASSWORD=$SF_BOOT_PW

@@ -192,14 +192,15 @@ docker compose -p "$P" -f compose.yaml -f compose.test.yaml down -v
 ```bash
 bash scripts/check_prod_config.sh             # гейт production-рендера
 bash scripts/stack_smoke.sh                   # nginx, prometheus, сети и командный контур на выпущенном стеке
+bash scripts/release_upgrade_smoke.sh         # два релиза подряд по DEPLOY.md; занимает 127.0.0.1:80 и :9090
 bash scripts/restore_rehearsal.sh             # копия в окне обслуживания и восстановление в пустой стек
 E2E_ALLOW_DESTRUCTIVE=1 bash scripts/e2e_reconcile.sh
 ```
 
 CI прогоняет Python-наборы через `uv sync --locked` на настоящих PostgreSQL, Redis и RabbitMQ, проверки
-фронтенда, гейт, тест прав издателя команд, production-bootstrap брокера, смоуки ролей баз, пула Operations и
-стека: [.github/workflows/ci.yml](.github/workflows/ci.yml). Репетиция восстановления и e2e запускаются только
-локально.
+фронтенда, гейт, тест прав издателя команд, production-bootstrap брокера, смоуки ролей баз, пула Operations,
+стека и второго релиза: [.github/workflows/ci.yml](.github/workflows/ci.yml). Репетиция восстановления и e2e
+запускаются только локально.
 
 ## Структура
 

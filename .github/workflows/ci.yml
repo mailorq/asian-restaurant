@@ -261,6 +261,14 @@ jobs:
       - uses: actions/checkout@v7
       - run: bash scripts/stack_smoke.sh
 
+  release-upgrade:
+    # two releases in a row by the release block of DEPLOY.md: the second migrates with and runs its own commit
+    timeout-minutes: 40
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash scripts/release_upgrade_smoke.sh
+
   ops-pool:
     # the operations pool on the production render: a pool of one under a locked projection and a burst past the
     # worker's bound, answered only with 200 and neutral 503s, within the pool's connection and the pids limit
