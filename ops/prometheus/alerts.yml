@@ -2,12 +2,16 @@ groups:
   - name: operations
     rules:
       - alert: OperationsConsumerDown
-        expr: operations_consumer_connected == 0 or absent(operations_consumer_connected)
+        # only the consumer's own target counts: every process that imports the metrics module exports this gauge at 0
+        expr: >-
+          operations_consumer_connected{job="operations-consumer"} == 0
+          or up{job="operations-consumer"} == 0
+          or absent(up{job="operations-consumer"})
         for: 1m
         labels: {severity: critical}
         annotations:
           summary: "operations consumer not connected to RabbitMQ"
-          description: "operations_consumer_connected is 0/absent — the projection consumer is not consuming."
+          description: "the projection consumer is not consuming: it is disconnected from the broker, down, or not scraped."
 
       - alert: OperationsDLQNotEmpty
         expr: rabbitmq_queue_messages{queue=~"operations.*dlq"} > 0
@@ -47,7 +51,11 @@ groups:
           description: "{{ $value }} row(s) past their attempt threshold, each holding back the later events of its aggregate; inspect with `manage.py outbox --list`."
 
       - alert: CommandConsumerDown
-        expr: commands_consumer_connected == 0 or absent(commands_consumer_connected)
+        # only the consumer's own target counts: backend and relay import the same metrics module and export this gauge at 0
+        expr: >-
+          commands_consumer_connected{job="commands-consumer"} == 0
+          or up{job="commands-consumer"} == 0
+          or absent(up{job="commands-consumer"})
         for: 1m
         labels: {severity: critical}
         annotations:

@@ -144,6 +144,8 @@ jobs:
         run: test ! -e .env
       - run: bash scripts/check_no_secrets.sh
       - run: bash scripts/check_prod_config.sh
+      # the alert rules against the series a stack produces, the zeros other processes export for a consumer's gauge included
+      - run: docker run --rm --entrypoint promtool -v "$PWD/ops/prometheus:/etc/prometheus:ro" prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996 test rules /etc/prometheus/alerts_test.yml
 
   command-permissions:
     # the publisher credential is a security boundary, so its restrictions are asserted against a

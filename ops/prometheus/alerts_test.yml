@@ -1,0 +1,95 @@
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 15s
+
+tests:
+  # consumers that consume stay quiet, whatever the processes importing the metrics modules export for the same gauges
+  - interval: 15s
+    input_series:
+      - series: 'commands_consumer_connected{job="commands-consumer", instance="commands-consumer:9102"}'
+        values: '1x20'
+      - series: 'up{job="commands-consumer", instance="commands-consumer:9102"}'
+        values: '1x20'
+      - series: 'commands_consumer_connected{job="relay", instance="relay:9104"}'
+        values: '0x20'
+      - series: 'commands_consumer_connected{job="backend", instance="backend:8000", pid="8"}'
+        values: '0x20'
+      - series: 'operations_consumer_connected{job="operations-consumer", instance="operations-consumer:9101"}'
+        values: '1x20'
+      - series: 'up{job="operations-consumer", instance="operations-consumer:9101"}'
+        values: '1x20'
+      - series: 'operations_consumer_connected{job="commands-relay", instance="commands-relay:9103"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: CommandConsumerDown
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: OperationsConsumerDown
+        exp_alerts: []
+
+  # a consumer that runs but lost the broker
+  - interval: 15s
+    input_series:
+      - series: 'commands_consumer_connected{job="commands-consumer", instance="commands-consumer:9102"}'
+        values: '0x20'
+      - series: 'up{job="commands-consumer", instance="commands-consumer:9102"}'
+        values: '1x20'
+      - series: 'operations_consumer_connected{job="operations-consumer", instance="operations-consumer:9101"}'
+        values: '0x20'
+      - series: 'up{job="operations-consumer", instance="operations-consumer:9101"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: CommandConsumerDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: commands-consumer, instance: "commands-consumer:9102"}
+            exp_annotations: &command-consumer-down {summary: command consumer not consuming, description: "no process is applying transition commands, so every command will time out."}
+      - eval_time: 4m
+        alertname: OperationsConsumerDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: operations-consumer, instance: "operations-consumer:9101"}
+            exp_annotations: &operations-consumer-down {summary: operations consumer not connected to RabbitMQ, description: "the projection consumer is not consuming: it is disconnected from the broker, down, or not scraped."}
+
+  # a stopped consumer: its target is down, and the zeros of the other processes do not stand in for it
+  - interval: 15s
+    input_series:
+      - series: 'up{job="commands-consumer", instance="commands-consumer:9102"}'
+        values: '0x20'
+      - series: 'commands_consumer_connected{job="relay", instance="relay:9104"}'
+        values: '0x20'
+      - series: 'up{job="operations-consumer", instance="operations-consumer:9101"}'
+        values: '0x20'
+      - series: 'operations_consumer_connected{job="commands-relay", instance="commands-relay:9103"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: CommandConsumerDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: commands-consumer, instance: "commands-consumer:9102"}
+            exp_annotations: *command-consumer-down
+      - eval_time: 4m
+        alertname: OperationsConsumerDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: operations-consumer, instance: "operations-consumer:9101"}
+            exp_annotations: *operations-consumer-down
+
+  # a consumer nobody scrapes: no series of its own, only the zeros of the other processes
+  - interval: 15s
+    input_series:
+      - series: 'commands_consumer_connected{job="relay", instance="relay:9104"}'
+        values: '0x20'
+      - series: 'operations_consumer_connected{job="commands-relay", instance="commands-relay:9103"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: CommandConsumerDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: commands-consumer}
+            exp_annotations: *command-consumer-down
+      - eval_time: 4m
+        alertname: OperationsConsumerDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: operations-consumer}
+            exp_annotations: *operations-consumer-down
