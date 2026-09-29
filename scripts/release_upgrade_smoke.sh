@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # two releases in a row, each run exactly as the release block of DEPLOY.md is written, in an isolated compose project:
-# the second must migrate with and start the processes of its own commit, not the images the first one left behind.
+# the second must migrate with and start the processes of its own commit, not the images the first one left behind,
+# and nothing the checkout holds beyond that commit may reach its images.
 # works on a throwaway git checkout of HEAD outside the repository, publishes what a release publishes (127.0.0.1:80
 # and 127.0.0.1:9090), and tears down only its own project and images
 set -euo pipefail
@@ -95,6 +96,16 @@ git -C "$CHECKOUT" add -A
 git -C "$CHECKOUT" -c user.name=smoke -c user.email=smoke@example.invalid commit -qm second
 revisions+=("$(git -C "$CHECKOUT" rev-parse HEAD)")
 second="${revisions[1]}"
+# files the second commit does not have, one per image: untracked, and git-ignored but not docker-ignored
+probes=("storefront /app/release_probe.py" "storefront /app/release_probe.log"
+        "operations /srv/services/order_operations/release_probe.py" "frontend /usr/share/nginx/html/release_probe.txt")
+echo 'raise SystemExit("not in the commit")' > "$CHECKOUT/backend/release_probe.py"
+echo probe > "$CHECKOUT/backend/release_probe.log"
+echo probe > "$CHECKOUT/services/order_operations/release_probe.py"
+# the commit tracks nothing under public/, yet vite copies whatever a checkout holds there into the site
+mkdir -p "$CHECKOUT/frontend/public"
+echo probe > "$CHECKOUT/frontend/public/release_probe.txt"
+git -C "$CHECKOUT" check-ignore -q backend/release_probe.log || fail "the log probe is not git-ignored"
 release second
 
 applied="$(dc exec -T db psql -X -A -t -q -U "$SF_BOOT" -d storefront \
@@ -119,6 +130,32 @@ done
 [ "$(docker image inspect -f '{{.Id}}' "asian-restaurant/storefront:${revisions[0]}")" != \
   "$(docker image inspect -f '{{.Id}}' "asian-restaurant/storefront:$second")" ] || fail "both commits resolved to one storefront build"
 echo "OK the migration jobs and every process run the image of the second commit"
+
+leaked=()
+for probe in "${probes[@]}"; do
+  read -r image path <<<"$probe"
+  status=0
+  docker run --rm --pull never --entrypoint sh "asian-restaurant/$image:$second" -c "test ! -e $path" || status=$?
+  case "$status" in
+    0) ;;
+    1) leaked+=("$image:$path") ;;
+    *) fail "could not look into asian-restaurant/$image:$second" ;;
+  esac
+done
+[ "${#leaked[@]}" -eq 0 ] || fail "files the commit does not have reached its images: ${leaked[*]}"
+echo "OK untracked and git-ignored files of the checkout stay out of the images"
+
+echo "== a commit that was not built is refused =="
+git -C "$CHECKOUT" -c user.name=smoke -c user.email=smoke@example.invalid commit -q --allow-empty -m third
+revisions+=("$(git -C "$CHECKOUT" rev-parse HEAD)")
+if out="$(cd "$CHECKOUT" && . "$WORK/dc.sh" && dc up -d 2>&1)"; then
+  fail "dc() started a commit it had not built"
+fi
+grep -q "is not built, run dc build first" <<<"$out" || fail "the refusal does not name the missing build: $out"
+if docker image inspect "asian-restaurant/storefront:${revisions[2]}" >/dev/null 2>&1; then
+  fail "compose built the third commit from the checkout"
+fi
+echo "OK dc() refuses to start a commit whose images dc build has not made"
 
 echo "== an uncommitted change is refused =="
 echo "# uncommitted" >> "$CHECKOUT/backend/manage.py"

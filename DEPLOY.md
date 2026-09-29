@@ -17,7 +17,7 @@
 dc() {
   : "${PROD_ENV_FILE:?set PROD_ENV_FILE to the production secrets file}"
   test -r "$PROD_ENV_FILE" || { echo "PROD_ENV_FILE is not readable" >&2; return 1; }
-  local repo_root env_file revision
+  local repo_root env_file revision context image status
   repo_root="$(realpath .)"
   env_file="$(realpath "$PROD_ENV_FILE")"
   # resolved first, so neither a relative path nor a symlink leading back in passes for external
@@ -27,6 +27,21 @@ dc() {
   # the images carry the commit as their tag, so an uncommitted change would be built under a tag that names other code
   git -C "$repo_root" diff --quiet HEAD -- || { echo "the checkout has uncommitted changes, a release deploys a commit" >&2; return 1; }
   revision="$(git -C "$repo_root" rev-parse HEAD)" || return 1
+  if [ "${1-}" = build ]; then
+    # the context is the commit itself: an untracked or git-ignored file of the checkout would enter an image whose tag does not name it
+    context="$(mktemp -d)" || return 1
+    status=0
+    git -C "$repo_root" archive "$revision" | tar -x -C "$context" \
+      && (cd "$context" && SOURCE_REVISION="$revision" docker compose --env-file "$env_file" -f compose.yaml -f compose.prod.yaml "$@") \
+      || status=$?
+    rm -rf "$context"
+    return "$status"
+  fi
+  # compose builds a missing image from the checkout, so nothing runs before dc build has made all three
+  for image in storefront operations frontend; do
+    docker image inspect "asian-restaurant/$image:$revision" >/dev/null 2>&1 \
+      || { echo "asian-restaurant/$image:$revision is not built, run dc build first" >&2; return 1; }
+  done
   # the resolved path, so a symlink swapped after the check cannot redirect compose
   SOURCE_REVISION="$revision" docker compose --env-file "$env_file" -f compose.yaml -f compose.prod.yaml "$@"
 }
@@ -50,7 +65,10 @@ dc up -d
 `asian-restaurant/frontend`, тег - хеш коммита рабочей копии. Новый коммит дает тег, которого на хосте еще нет,
 поэтому ни одна команда релиза не может взять сборку прошлого релиза, а мигратор и процессы одной кодовой
 базы запускаются из одного образа. Незакоммиченные изменения `dc()` отвергает: иначе под тегом коммита собрался
-бы другой код. Образы прошлых релизов остаются на хосте для отката, удаляют их вручную.
+бы другой код. `dc build` собирает из выгрузки коммита (`git archive`), поэтому неотслеживаемые и игнорируемые git
+файлы рабочей копии в образ не попадают. Остальные команды отказывают, пока образов этой ревизии нет: compose
+собрал бы недостающий образ из рабочей копии. Образы прошлых релизов остаются на хосте для отката, удаляют их
+вручную.
 
 Каталог и остатки в релиз не входят: они принадлежат работающему магазину. На новой установке их
 заводят один раз, см. «Первая установка: каталог и остатки».

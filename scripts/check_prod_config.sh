@@ -117,13 +117,19 @@ for path in [pathlib.Path(".github/workflows/ci.yml"), *sorted(pathlib.Path("scr
         lexer.whitespace_split = True
         # read lazily: the arguments after the image may open a quote this line does not close
         tokens = iter(lexer.get_token, None)
+        local = False
         for token in tokens:
             if token.startswith("-"):
                 if "=" not in token and token in VALUED:
-                    next(tokens, None)
+                    value = next(tokens, None)
+                    local = local or (token == "--pull" and value == "never")
+                local = local or token == "--pull=never"
                 continue
             name = re.fullmatch(r"\$\{?(\w+)\}?", token)
-            refs.append((str(path), assigned.get(name.group(1), token) if name else token))
+            ref = assigned.get(name.group(1), token) if name else token
+            # an application image exists only as the host built it, and --pull never keeps any registry from answering for it
+            if not (local and ref.startswith("asian-restaurant/")):
+                refs.append((str(path), ref))
             break
 
 failed = sorted({f"{where}: {ref}" for where, ref in refs if not PINNED.match(ref)})
@@ -550,6 +556,12 @@ required = {
         r'revision="\$\(git -C "\$repo_root" rev-parse HEAD\)"',
     "the compose call tags the images with that revision":
         r'SOURCE_REVISION="\$revision" docker compose',
+    "a build takes its context from the commit, not the checkout":
+        r'git -C "\$repo_root" archive "\$revision" \| tar -x -C "\$context"[^\n]*\n'
+        r'\s*&& \(cd "\$context" && SOURCE_REVISION="\$revision" docker compose',
+    "every other call refuses while an image of the revision is missing":
+        r'for image in storefront operations frontend; do\s*\n'
+        r'\s*docker image inspect "asian-restaurant/\$image:\$revision"[^\n]*\n\s*\|\|[^\n]*return 1',
 }
 missing = [what for what, pattern in required.items() if not re.search(pattern, body, re.S)]
 if missing:
