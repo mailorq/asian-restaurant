@@ -1,7 +1,8 @@
 """one-time codes that prove a phone, for registration and for recovery
 
 a start is recorded and limited the same way whether or not the number has an account, so neither the
-answer nor the limits tell an outsider which numbers are registered
+answer nor the limits tell an outsider which numbers are registered. the limits are the number's, whatever
+the code is for: every message lands on the same phone and costs the same
 """
 
 import hashlib
@@ -10,7 +11,7 @@ import secrets
 from datetime import timedelta
 
 from django.conf import settings
-from django.db import transaction
+from django.db import connection, transaction
 from django.utils import timezone
 
 from accounts import sms
@@ -37,28 +38,35 @@ def _digest(phone: str, purpose: str, code: str) -> str:
     return hmac.new(settings.SECRET_KEY.encode(), message, hashlib.sha256).hexdigest()
 
 
+def _hold_number(phone: str) -> None:
+    # a lock on the number itself until the transaction ends: its first start has no row to lock
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", [f"phone-challenge:{phone}"])
+
+
 def start(phone: str, purpose: str, text) -> None:
-    """records a new code for the phone and sends text(code); a text of None sends nothing"""
+    """reserves a new code for the phone and sends text(code); a text of None sends nothing"""
     sender = sms.sender()
     if not sender.available:
         raise sms.SmsUnavailable("no sms provider is configured")
-    now = timezone.now()
-    recent = list(
-        PhoneChallenge.objects.filter(phone=phone, purpose=purpose, created_at__gte=now - timedelta(days=1))
-        .order_by("-created_at")
-        .values_list("created_at", flat=True)
-    )
-    if recent and now - recent[0] < RESEND_AFTER:
-        raise TooSoon(int((RESEND_AFTER - (now - recent[0])).total_seconds()) + 1)
-    if len(recent) >= DAILY_CODES:
-        raise TooMany()
-
     code = f"{secrets.randbelow(10**6):06d}"
     with transaction.atomic():
+        # the limits are read and the reservation written under one lock, so concurrent starts take turns
+        _hold_number(phone)
+        now = timezone.now()
+        recent = list(
+            PhoneChallenge.objects.filter(phone=phone, created_at__gte=now - timedelta(days=1))
+            .order_by("-created_at")
+            .values_list("created_at", flat=True)
+        )
+        if recent and now - recent[0] < RESEND_AFTER:
+            raise TooSoon(int((RESEND_AFTER - (now - recent[0])).total_seconds()) + 1)
+        if len(recent) >= DAILY_CODES:
+            raise TooMany()
         PhoneChallenge.objects.filter(phone=phone, created_at__lt=now - timedelta(days=1)).delete()
         # only the latest code of a phone works
         PhoneChallenge.objects.filter(phone=phone, purpose=purpose, used_at__isnull=True).update(used_at=now)
-        challenge = PhoneChallenge.objects.create(
+        PhoneChallenge.objects.create(
             phone=phone,
             purpose=purpose,
             code_hash=_digest(phone, purpose, code),
@@ -71,7 +79,8 @@ def start(phone: str, purpose: str, text) -> None:
         # after the commit: a provider is an external call, and no transaction waits on it
         sender.send(phone, message)
     except Exception as exc:
-        PhoneChallenge.objects.filter(pk=challenge.pk).delete()
+        # the reservation stays: a failed call may still have delivered, and freeing it would let failures
+        # send past the limits
         raise sms.SmsUnavailable(str(exc)) from exc
 
 

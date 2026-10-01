@@ -10,6 +10,7 @@ from django.db import transaction
 from django.test import Client
 from django.utils import timezone
 
+from accounts import challenges
 from accounts import service as accounts_service
 from accounts.api import ALREADY_REGISTERED, CODE_SENT, WRONG_CODE
 from accounts.models import PhoneChallenge
@@ -133,6 +134,64 @@ def test_a_number_gets_a_new_code_a_minute_later_and_five_a_day(client, owner, s
 
     assert statuses == [200] * 5 + [429]
     assert soon.status_code == 429 and "завтра" in soon.json()["detail"]
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("earlier", [0, 4], ids=["first code of the number", "fifth code of the day"])
+def test_a_start_waits_for_one_holding_the_number_and_then_is_refused(sms_outbox, earlier):
+    now = timezone.now()
+    for _ in range(earlier):
+        PhoneChallenge.objects.create(
+            phone=FREE, purpose=PhoneChallenge.Purpose.REGISTER, code_hash="spent", expires_at=now, used_at=now
+        )
+    _earlier(FREE, 61)
+    holding, release, results = threading.Event(), threading.Event(), {}
+
+    def first():
+        with transaction.atomic():
+            challenges.start(FREE, PhoneChallenge.Purpose.REGISTER, lambda code: f"code {code}")
+            holding.set()
+            assert release.wait(WAIT_SECONDS)
+
+    def second():
+        results["second"] = _post(Client(), "register/code", {"phone": FREE})
+
+    met = queue_behind(Writer("first", first), Writer("second", second), holding, release)
+
+    assert met == "blocked"
+    assert results["second"].status_code == 429
+    assert len(sms_outbox) == 1
+    assert PhoneChallenge.objects.count() == earlier + 1
+    assert PhoneChallenge.objects.filter(used_at__isnull=True).count() == 1
+
+
+def test_registration_and_recovery_share_the_limits_of_a_number(client, owner, sms_outbox):
+    register = _post(client, "register/code", {"phone": TAKEN})
+    recover = _post(client, "password/code", {"phone": TAKEN})
+    statuses = [register.status_code, recover.status_code]
+    for path in ("password/code", "register/code", "password/code", "register/code", "password/code"):
+        _earlier(TAKEN, 61)
+        cache.clear()
+        statuses.append(_post(client, path, {"phone": TAKEN}).status_code)
+
+    assert statuses == [200, 429, 200, 200, 200, 200, 429]
+    assert PhoneChallenge.objects.filter(phone=TAKEN).count() == challenges.DAILY_CODES
+
+
+def test_a_failed_send_keeps_its_place_in_the_limits(client, settings):
+    settings.SMS_BACKEND = "tests.sms.FailingSender"
+
+    failed = _post(client, "register/code", {"phone": FREE})
+    again = _post(client, "register/code", {"phone": FREE})
+    statuses = []
+    for _ in range(challenges.DAILY_CODES):
+        _earlier(FREE, 61)
+        cache.clear()
+        statuses.append(_post(client, "register/code", {"phone": FREE}).status_code)
+
+    assert failed.status_code == 503 and again.status_code == 429
+    assert statuses == [503] * (challenges.DAILY_CODES - 1) + [429]
+    assert PhoneChallenge.objects.filter(phone=FREE).count() == challenges.DAILY_CODES
 
 
 def test_the_code_itself_is_not_stored(client, sms_outbox):
