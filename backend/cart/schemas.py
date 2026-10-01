@@ -12,6 +12,10 @@ class SetQtyIn(Schema):
     expected_version: int | None = None
 
 
+class ReviewIn(Schema):
+    expected_version: int
+
+
 class CartLineOut(Schema):
     product_id: int
     name: str
@@ -43,6 +47,8 @@ class CartOut(Schema):
     count: int
     adjustments: list[CartAdjustment] = []
     removed_items: list[CartRemoved] = []
+    # an order of the previous release this cart may still hold lines of, until its owner confirms it
+    review_order: int | None = None
 
 
 class CartConflictOut(Schema):

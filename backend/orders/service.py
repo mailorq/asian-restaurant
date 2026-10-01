@@ -179,13 +179,11 @@ def _bought(order: Order) -> dict[int, int]:
 
 
 def _unknown_orders(user, cart):
-    # an order of a previous release recorded nothing about its cart, so that cart is known to be
-    # uncleared only while it is the one the order was built from, still at that version. such a
-    # cart was last written before this release and expires CART_TTL after it, and so can this
+    # orders of a previous release recorded nothing about the cart they were built from. a cart of
+    # that generation which moved on since may or may not still hold what they bought: a write after
+    # a failed clearing and a write after a successful one look the same, so only its owner can tell
     return Order.objects.filter(
-        source_cart_id=_source_cart_id(user, cart.cart_id),
-        source_cart_version=cart.version,
-        cart_clear_pending__isnull=True,
+        source_cart_id=_source_cart_id(user, cart.cart_id), cart_clear_pending__isnull=True
     )
 
 
@@ -193,7 +191,22 @@ async def purchases_to_settle(user) -> bool:
     if await Order.objects.filter(user=user, cart_clear_pending=True).aexists():
         return True
     cart = await cart_service.read_state(cart_service.user_key(user.id))
-    return bool(cart.items) and await _unknown_orders(user, cart).aexists()
+    return await _unknown_orders(user, cart).aexists()
+
+
+async def cart_review(user) -> int | None:
+    """the order of a previous release the cart may still hold, until its owner confirms the cart"""
+    cart = await cart_service.read_state(cart_service.user_key(user.id))
+    return await _unknown_orders(user, cart).order_by("pk").values_list("pk", flat=True).afirst()
+
+
+def confirm_cart(user, expected_version: int) -> bool:
+    """the owner keeps the cart as it is at the version they saw; false when it has moved on since"""
+    cart = cart_service.read_sync(cart_service.user_key(user.id))
+    if cart.version != expected_version:
+        return False
+    _unknown_orders(user, cart).update(cart_clear_pending=False)
+    return True
 
 
 def settle_purchases(user) -> None:
@@ -208,11 +221,18 @@ def settle_purchases(user) -> None:
         Order.objects.filter(pk=order.pk).update(cart_clear_pending=False)
 
     cart = cart_service.read_sync(key)
-    unknown = _unknown_orders(user, cart).prefetch_related("items").first() if cart.items else None
-    # only a cart holding exactly what the order bought is cleared, as the previous release itself did
-    if unknown is not None and _bought(unknown) == cart.items:
-        if cart_service.clear_sync(key, cart.version, cart.cart_id):
-            Order.objects.filter(pk=unknown.pk).update(cart_clear_pending=False)
+    unknown = list(_unknown_orders(user, cart).prefetch_related("items"))
+    if not unknown:
+        return
+    # a cart still at the version and contents of such an order is cleared, as the previous release
+    # itself did on a retry
+    untouched = [o for o in unknown if o.source_cart_version == cart.version and _bought(o) == cart.items]
+    if untouched and not cart_service.clear_sync(key, cart.version, cart.cart_id):
+        return
+    # an empty cart has nothing of theirs left to buy, and whatever it gains from here on is new;
+    # a cart that moved on and still holds lines waits for its owner, see cart_review
+    if untouched or not cart.items:
+        Order.objects.filter(pk__in=[o.pk for o in unknown]).update(cart_clear_pending=False)
 
 
 def _after_commit(user, order: Order) -> Order:
@@ -264,6 +284,13 @@ def checkout(user, raw_address: str, payment_method: str, idempotency_key: str, 
     cart_items, cart_version = cart.items, cart.version
     if not cart_items:
         raise CheckoutError("empty_cart", "Корзина пуста")
+    review = _unknown_orders(user, cart).order_by("pk").values_list("pk", flat=True).first()
+    if review is not None:
+        raise CheckoutError(
+            "cart_needs_review",
+            f"Корзина могла сохранить позиции заказа №{review}, оформленного до обновления сайта - "
+            "проверьте ее состав и подтвердите его",
+        )
     source_cart_id = _source_cart_id(user, cart.cart_id)
 
     geo_result = _geocode_safe(raw_address)  # external http, kept out of the transaction

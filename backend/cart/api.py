@@ -7,7 +7,7 @@ from ninja import Router, Status
 from ninja.errors import HttpError
 
 from cart import service
-from cart.schemas import AddItemIn, CartConflictOut, CartOut, SetQtyIn
+from cart.schemas import AddItemIn, CartConflictOut, CartOut, ReviewIn, SetQtyIn
 from common.ratelimit import rate_limit
 from menu.models import Product
 from orders import service as order_service
@@ -66,19 +66,23 @@ async def _resolve(request, response: HttpResponse) -> str:
     return service.guest_key(guest_id)
 
 
-async def _current(key: str) -> dict:
+async def _current(request, key: str) -> dict:
     items, version = await service.read(key)
-    return await service.render(key, items, version)
+    cart = await service.render(key, items, version)
+    user = await request.auser()
+    if user.is_authenticated:
+        cart["review_order"] = await order_service.cart_review(user)
+    return cart
 
 
-async def _conflict(key: str) -> dict:
-    return {"code": "cart_version_conflict", "cart": await _current(key)}
+async def _conflict(request, key: str) -> dict:
+    return {"code": "cart_version_conflict", "cart": await _current(request, key)}
 
 
 @router.get("", response=CartOut)
 async def get_cart(request, response: HttpResponse):
     key = await _resolve(request, response)
-    return await _current(key)
+    return await _current(request, key)
 
 
 @router.post("/items", response={200: CartOut, 409: CartConflictOut})
@@ -90,8 +94,8 @@ async def add_item(request, data: AddItemIn, response: HttpResponse):
     try:
         await service.add(key, data.product_id, data.quantity, data.expected_version)
     except service.CartConflict:
-        return Status(409, await _conflict(key))
-    return Status(200, await _current(key))
+        return Status(409, await _conflict(request, key))
+    return Status(200, await _current(request, key))
 
 
 @router.put("/items/{product_id}", response={200: CartOut, 409: CartConflictOut})
@@ -103,8 +107,8 @@ async def set_item(request, product_id: int, data: SetQtyIn, response: HttpRespo
     try:
         await service.set_qty(key, product_id, data.quantity, data.expected_version)
     except service.CartConflict:
-        return Status(409, await _conflict(key))
-    return Status(200, await _current(key))
+        return Status(409, await _conflict(request, key))
+    return Status(200, await _current(request, key))
 
 
 @router.delete("/items/{product_id}", response={200: CartOut, 409: CartConflictOut})
@@ -114,8 +118,8 @@ async def remove_item(request, product_id: int, response: HttpResponse, expected
     try:
         await service.remove(key, product_id, expected_version)
     except service.CartConflict:
-        return Status(409, await _conflict(key))
-    return Status(200, await _current(key))
+        return Status(409, await _conflict(request, key))
+    return Status(200, await _current(request, key))
 
 
 @router.delete("", response={200: CartOut, 409: CartConflictOut})
@@ -125,5 +129,16 @@ async def clear_cart(request, response: HttpResponse, expected_version: int | No
     try:
         await service.clear(key, expected_version)
     except service.CartConflict:
-        return Status(409, await _conflict(key))
-    return Status(200, await _current(key))
+        return Status(409, await _conflict(request, key))
+    return Status(200, await _current(request, key))
+
+
+@router.post("/review", response={200: CartOut, 409: CartConflictOut})
+@rate_limit(**WRITE_LIMIT)
+async def confirm_review(request, data: ReviewIn, response: HttpResponse):
+    # the owner keeps a cart an order of the previous release may have left lines in, as they see it
+    key = await _resolve(request, response)
+    user = await request.auser()
+    if user.is_authenticated and not await sync_to_async(order_service.confirm_cart)(user, data.expected_version):
+        return Status(409, await _conflict(request, key))
+    return Status(200, await _current(request, key))

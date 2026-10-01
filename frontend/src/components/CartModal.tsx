@@ -4,7 +4,7 @@ import { Icon } from "./Icon";
 import { ProductThumb } from "./ProductThumb";
 import { useUI } from "../stores/ui";
 import { useToast } from "../stores/toast";
-import { useCartQuery, useRemoveItem, useSetItem } from "../api/cart";
+import { useCartQuery, useConfirmCart, useRemoveItem, useSetItem } from "../api/cart";
 import { useCheckout, useLastAddress, useVerifyAddress } from "../api/orders";
 import { ApiError } from "../api/client";
 import { useAuth } from "../stores/auth";
@@ -37,7 +37,9 @@ export function CartModal() {
   const items = cart?.items ?? [];
   const total = cart?.total ?? 0;
   const empty = items.length === 0;
+  const confirmCart = useConfirmCart();
   const busy = setItem.isPending || removeItem.isPending;
+  const review = cart?.review_order ?? null;
 
   // prefill recipient from the profile until the user edits it (does not touch the profile)
   useEffect(() => {
@@ -124,7 +126,8 @@ export function CartModal() {
             </div>
             <button
               onClick={openCheckout}
-              className="h-12 w-full rounded-xl bg-primary font-medium text-primary-contrast transition-[background-color,transform] duration-200 hover:bg-primary-hover active:scale-[0.99]"
+              disabled={review !== null}
+              className="h-12 w-full rounded-xl bg-primary font-medium text-primary-contrast transition-[background-color,transform] duration-200 hover:bg-primary-hover active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
             >
               Оформить заказ
             </button>
@@ -159,6 +162,21 @@ export function CartModal() {
         </div>
       ) : step === "cart" ? (
         <>
+          {review !== null && (
+            <div className="mb-3 rounded-lg bg-accent/10 px-3 py-2.5 text-sm">
+              <p>
+                Корзина могла сохранить позиции заказа №{review}, оформленного до обновления сайта. Проверьте
+                состав: уже купленное можно удалить.
+              </p>
+              <button
+                onClick={() => confirmCart.mutate()}
+                disabled={confirmCart.isPending}
+                className="mt-2 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-contrast hover:bg-primary-hover disabled:opacity-60"
+              >
+                Состав верный
+              </button>
+            </div>
+          )}
           {cart && (cart.removed_items.length > 0 || cart.adjustments.length > 0) && (
             <div className="mb-3 space-y-1.5">
               {cart.removed_items.map((r) => (

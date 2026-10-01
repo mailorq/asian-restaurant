@@ -35,6 +35,8 @@ export interface Cart {
   count: number;
   adjustments: CartAdjustment[];
   removed_items: CartRemoved[];
+  // an order of the previous release this cart may still hold lines of, until its owner confirms it
+  review_order?: number | null;
 }
 
 const CART_KEY = ["cart"] as const;
@@ -163,6 +165,20 @@ export function useRemoveItem() {
           `/cart/items/${vars.productId}${expected === undefined ? "" : `?expected_version=${expected}`}`,
           { method: "DELETE" },
         ),
+      false,
+    ),
+  );
+}
+
+export function useConfirmCart() {
+  return useCartMutation<void>((qc: QueryClient) =>
+    writeWithVersion(
+      qc,
+      (expected) =>
+        api<Cart>("/cart/review", {
+          method: "POST",
+          body: JSON.stringify({ expected_version: expected }),
+        }),
       false,
     ),
   );
