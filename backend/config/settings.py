@@ -136,6 +136,13 @@ def _is_placeholder(value: str) -> bool:
     return "change-me" in lowered or lowered.startswith(("dev-", "ops-dev"))
 
 DJANGO_PRODUCTION = env.bool("DJANGO_PRODUCTION", default=False)
+
+# where confirmation codes go: the log in development, nowhere in production until a provider is chosen,
+# so registration and recovery answer 503 there rather than skip the phone
+SMS_BACKEND = env("SMS_BACKEND", default="") or (
+    "accounts.sms.DisabledSender" if DJANGO_PRODUCTION else "accounts.sms.ConsoleSender"
+)
+
 if DJANGO_PRODUCTION:
     import os
 
@@ -154,6 +161,9 @@ if DJANGO_PRODUCTION:
         raise ImproperlyConfigured("do not pass IDENTITY_JWT_PRIVATE_KEY inline; mount a secret file")
     if not (IDENTITY_JWT_PRIVATE_KEY_FILE and os.access(IDENTITY_JWT_PRIVATE_KEY_FILE, os.R_OK)):
         raise ImproperlyConfigured("IDENTITY_JWT_PRIVATE_KEY_FILE must point to a readable secret")
+    # the console backend writes every code into the log, where anyone who reads it could confirm a phone
+    if SMS_BACKEND == "accounts.sms.ConsoleSender":
+        raise ImproperlyConfigured("SMS_BACKEND must not write codes to the log in production")
 
 AUTH_USER_MODEL = "accounts.User"
 

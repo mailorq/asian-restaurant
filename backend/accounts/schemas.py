@@ -3,10 +3,21 @@ from ninja import Field, Schema
 from employee.permissions import is_employee
 
 
+class PhoneIn(Schema):
+    phone: str
+
+
 class RegisterIn(Schema):
     phone: str
     password: str
     name: str = Field(min_length=1, max_length=150)
+    code: str = Field(min_length=1, max_length=12)
+
+
+class ResetIn(Schema):
+    phone: str
+    code: str = Field(min_length=1, max_length=12)
+    password: str
 
 
 class LoginIn(Schema):

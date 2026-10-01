@@ -34,15 +34,18 @@ def test_after_a_phone_change_the_new_number_logs_in_and_the_old_one_does_not(cl
     assert _login(client, NEW).status_code == 200
 
 
-def test_the_old_number_can_be_registered_by_its_next_owner(client, customer):
+def test_the_old_number_can_be_registered_by_its_next_owner(client, customer, sms_outbox):
     accounts_service.set_customer_profile(customer.pk, phone=NEW)
 
+    client.post("/api/auth/register/code", content_type="application/json", data=json.dumps({"phone": OLD}))
+    code = sms_outbox[-1][1].split(": ", 1)[1][:6]
     response = client.post(
         "/api/auth/register",
         content_type="application/json",
-        data=json.dumps({"phone": OLD, "password": "Pass!2345word", "name": "Новый"}),
+        data=json.dumps({"phone": OLD, "password": "Pass!2345word", "name": "Новый", "code": code}),
     )
 
+    assert sms_outbox[-1][0] == OLD
     assert response.status_code == 200
 
 

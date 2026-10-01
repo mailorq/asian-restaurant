@@ -153,6 +153,15 @@ def superuser(db):
 
 
 @pytest.fixture
+def sms_outbox(settings):
+    from tests import sms
+
+    settings.SMS_BACKEND = "tests.sms.MemorySender"
+    sms.SENT.clear()
+    return sms.SENT
+
+
+@pytest.fixture
 def admin_client(client, superuser, settings):
     # admin pages reference static files, and tests run without a collected manifest
     settings.STORAGES = {

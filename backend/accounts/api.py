@@ -7,31 +7,82 @@ from ninja import Router
 from ninja.errors import HttpError
 from ninja.security import django_auth
 
-from accounts import jwt_service
+from accounts import challenges, jwt_service, sms
 from accounts import service as accounts_service
-from accounts.models import User
+from accounts.models import PhoneChallenge, User
 from accounts.phone import to_e164
-from accounts.schemas import LoginIn, MessageOut, RegisterIn, UserOut
+from accounts.roles import is_staff_member
+from accounts.schemas import LoginIn, MessageOut, PhoneIn, RegisterIn, ResetIn, UserOut
 from common.ratelimit import rate_limit
 
 router = Router(tags=["auth"])
+
+# the same answer whatever the number is: it never tells whether an account holds it
+CODE_SENT = "Код отправлен в SMS"
+WRONG_CODE = "Неверный или просроченный код"
+ALREADY_REGISTERED = "Этот номер уже зарегистрирован в Asian Restaurant. Войдите или восстановите пароль."
+
+
+def _phone(raw: str) -> str:
+    phone = to_e164(raw)
+    if phone is None:
+        raise HttpError(400, "Некорректный номер телефона")
+    return phone
+
+
+def _password(password: str, phone: str, name: str = "") -> None:
+    # judged against what the request carries, never against an account, so it answers the same either way
+    try:
+        validate_password(password, User(username=phone, phone=phone, first_name=name))
+    except ValidationError as exc:
+        raise HttpError(400, " ".join(exc.messages)) from exc
+
+
+def _send_code(phone: str, purpose: str, text) -> dict:
+    try:
+        challenges.start(phone, purpose, text)
+    except challenges.TooSoon as exc:
+        raise HttpError(429, f"Код уже отправлен, новый можно запросить через {exc.retry_after} с") from exc
+    except challenges.TooMany as exc:
+        raise HttpError(429, "Слишком много кодов на этот номер, попробуйте завтра") from exc
+    except sms.SmsUnavailable as exc:
+        raise HttpError(503, "Отправка SMS временно недоступна") from exc
+    return {"detail": CODE_SENT}
+
+
+def _recoverable(user: User | None) -> bool:
+    # a staff account is not handed over to whoever holds its phone: an administrator resets it
+    return bool(
+        user and user.is_active and not (user.is_staff or user.is_superuser or is_staff_member(user))
+    )
+
+
+@router.post("/register/code", response=MessageOut, auth=None)
+@rate_limit("register_code", limit=5, window=600)
+def register_code(request, data: PhoneIn):
+    phone = _phone(data.phone)
+    if accounts_service.phone_owner(phone) is not None:
+        # its owner learns of the attempt, the caller gets the answer a free number gets
+        return _send_code(phone, PhoneChallenge.Purpose.REGISTER, lambda code: ALREADY_REGISTERED)
+    return _send_code(
+        phone,
+        PhoneChallenge.Purpose.REGISTER,
+        lambda code: f"Код регистрации в Asian Restaurant: {code}. Никому его не сообщайте.",
+    )
 
 
 @router.post("/register", response=UserOut, auth=None)
 @rate_limit("register", limit=10, window=60)
 def register(request, data: RegisterIn):
-    phone = to_e164(data.phone)
-    if phone is None:
-        raise HttpError(400, "Некорректный номер телефона")
+    phone = _phone(data.phone)
     name = data.name.strip()
     if not name:
         raise HttpError(400, "Укажите имя")
-    try:
-        validate_password(data.password, User(username=phone, phone=phone, first_name=name))
-    except ValidationError as exc:
-        raise HttpError(400, " ".join(exc.messages)) from exc
-    if User.objects.filter(phone=phone).exists():
-        raise HttpError(400, "Этот номер уже зарегистрирован")
+    _password(data.password, phone, name)
+    if not challenges.consume(phone, PhoneChallenge.Purpose.REGISTER, data.code):
+        raise HttpError(400, WRONG_CODE)
+    if accounts_service.phone_owner(phone) is not None:
+        raise HttpError(400, WRONG_CODE)
     try:
         with transaction.atomic():
             user = User.objects.create_user(
@@ -39,7 +90,37 @@ def register(request, data: RegisterIn):
             )
             accounts_service.emit_customer_created(user)
     except IntegrityError as exc:
-        raise HttpError(400, "Этот номер уже зарегистрирован") from exc
+        raise HttpError(400, WRONG_CODE) from exc
+    login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+    return user
+
+
+@router.post("/password/code", response=MessageOut, auth=None)
+@rate_limit("password_code", limit=5, window=600)
+def password_code(request, data: PhoneIn):
+    phone = _phone(data.phone)
+    if not _recoverable(accounts_service.phone_owner(phone)):
+        return _send_code(phone, PhoneChallenge.Purpose.RESET, lambda code: None)
+    return _send_code(
+        phone,
+        PhoneChallenge.Purpose.RESET,
+        lambda code: f"Код восстановления доступа в Asian Restaurant: {code}. Никому его не сообщайте.",
+    )
+
+
+@router.post("/password/reset", response=UserOut, auth=None)
+@rate_limit("password_reset", limit=10, window=600)
+def password_reset(request, data: ResetIn):
+    phone = _phone(data.phone)
+    _password(data.password, phone)
+    if not challenges.consume(phone, PhoneChallenge.Purpose.RESET, data.code):
+        raise HttpError(400, WRONG_CODE)
+    user = accounts_service.phone_owner(phone)
+    if not _recoverable(user):
+        raise HttpError(400, WRONG_CODE)
+    # a new password changes the session hash, so every other session of the account ends here
+    user.set_password(data.password)
+    user.save(update_fields=["password"])
     login(request, user, backend="django.contrib.auth.backends.ModelBackend")
     return user
 

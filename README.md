@@ -111,6 +111,12 @@ Storefront - это `backend` (API, админка и BFF панели сотр�
 | `restaurant_manager` | доступ оператора, склад и данные покупателей |
 | суперпользователь | все, и только он выдает штатные роли |
 
+- Покупатель регистрируется по коду из SMS: `POST /api/auth/register/code` отправляет код, `POST /api/auth/register`
+  создает аккаунт только с ним. Код живет 10 минут и дает 5 попыток, новый можно запросить через минуту и не
+  больше 5 раз в сутки, хранится только его HMAC. Ответ и лимиты одинаковы для свободного и занятого номера,
+  владельцу занятого приходит SMS о попытке. Пароль восстанавливается так же, через `/api/auth/password/code` и
+  `/api/auth/password/reset`, и остальные сессии аккаунта при этом заканчиваются. Аккаунт сотрудника по SMS не
+  восстанавливается, его пароль меняет администратор (`manage.py changepassword`).
 - Сотрудник держит ровно одну роль: две группы сразу закрывают доступ, а не расширяют его. `is_staff` сам по
   себе ничего не дает. Каждое изменение роли пишется в `EmployeeRoleAudit`.
 - Storefront подписывает JWT сотрудника для Operations. Operations проверяет подпись по JWKS storefront и
@@ -152,7 +158,8 @@ docker compose exec backend python manage.py seed_initial_stock --confirm --quan
 docker compose exec backend python manage.py createsuperuser --username +380671112244
 ```
 
-Сотрудник регистрируется на сайте как покупатель, здесь с телефоном `+380671112233`, и получает роль:
+Сотрудник регистрируется на сайте как покупатель, здесь с телефоном `+380671112233`, и получает роль. Код из
+SMS в dev не отправляется, а пишется в лог backend: `docker compose logs backend | grep "sms to"`.
 
 ```bash
 docker compose exec backend python manage.py grant_employee +380671112233 --role restaurant_manager --actor +380671112244

@@ -49,3 +49,26 @@ class EmployeeRoleAudit(models.Model):
 
     def __str__(self) -> str:
         return f"{self.action} → {self.target_id}"
+
+
+class PhoneChallenge(models.Model):
+    """a code sent to a phone, proving whoever registers or recovers an account holds that phone"""
+
+    class Purpose(models.TextChoices):
+        REGISTER = "register", "Регистрация"
+        RESET = "reset", "Восстановление доступа"
+
+    phone = models.CharField(max_length=16)
+    purpose = models.CharField(max_length=16, choices=Purpose.choices)
+    # keyed with the secret key, so the table alone does not give the code away
+    code_hash = models.CharField(max_length=64)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["phone", "purpose", "-created_at"])]
+
+    def __str__(self) -> str:
+        return f"{self.purpose} {self.phone}"

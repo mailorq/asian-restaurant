@@ -15,7 +15,7 @@ import pytest
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 # anything the host environment could otherwise supply and so decide the outcome
-ISOLATED = ("IDENTITY_JWT_PRIVATE_KEY", "IDENTITY_JWT_PRIVATE_KEY_FILE", "DJANGO_SETTINGS_MODULE")
+ISOLATED = ("IDENTITY_JWT_PRIVATE_KEY", "IDENTITY_JWT_PRIVATE_KEY_FILE", "DJANGO_SETTINGS_MODULE", "SMS_BACKEND")
 
 BASE = {
     "DJANGO_PRODUCTION": "1",
@@ -87,3 +87,22 @@ def test_the_schema_is_not_served_in_production(signing_key):
 
     assert result.returncode == 0, result.stderr[-2000:]
     assert "docs_url None openapi_url None" in result.stdout, result.stdout
+
+
+def test_an_sms_backend_that_logs_codes_refuses_to_start(signing_key):
+    result = _boot(signing_key, SMS_BACKEND="accounts.sms.ConsoleSender")
+    assert _refused(result, "SMS_BACKEND"), result.stderr[-800:]
+
+
+def test_production_sends_no_sms_until_a_provider_is_chosen(signing_key):
+    env = {k: v for k, v in os.environ.items() if k not in ISOLATED}
+    env |= BASE | {"IDENTITY_JWT_PRIVATE_KEY_FILE": str(signing_key)}
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import os, django; os.environ['DJANGO_SETTINGS_MODULE'] = 'config.settings'; django.setup();"
+         " from django.conf import settings; print('sms', settings.SMS_BACKEND)"],
+        cwd=SERVICE_ROOT, env=env, capture_output=True, text=True, timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert "sms accounts.sms.DisabledSender" in result.stdout, result.stdout
