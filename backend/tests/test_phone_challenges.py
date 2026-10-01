@@ -1,15 +1,20 @@
 import json
 import re
+import threading
 from datetime import timedelta
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.db import transaction
 from django.test import Client
 from django.utils import timezone
 
+from accounts import service as accounts_service
 from accounts.api import ALREADY_REGISTERED, CODE_SENT, WRONG_CODE
 from accounts.models import PhoneChallenge
+from accounts.roles import StaffRole, set_staff_role
+from tests.concurrency import WAIT_SECONDS, Writer, queue_behind
 
 pytestmark = pytest.mark.django_db
 
@@ -183,6 +188,81 @@ def test_a_staff_account_is_not_recovered_by_sms(client, superuser, sms_outbox):
     assert reset.status_code == 400
     superuser.refresh_from_db()
     assert superuser.check_password("Pass!2345")
+
+
+def _recovery_code(sms_outbox):
+    assert _post(Client(), "password/code", {"phone": TAKEN}).status_code == 200
+    return _code(sms_outbox, TAKEN)
+
+
+def _untouched(account):
+    account.refresh_from_db()
+    return account.check_password("Pass!2345")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_recovery_waits_for_a_role_grant_holding_the_account_and_then_refuses(owner, superuser, sms_outbox):
+    code = _recovery_code(sms_outbox)
+    holding, release, results = threading.Event(), threading.Event(), {}
+
+    def grant():
+        with transaction.atomic():
+            set_staff_role(actor=superuser, target=owner, role=StaffRole.OPERATOR)
+            holding.set()
+            assert release.wait(WAIT_SECONDS)
+
+    def recover():
+        client = Client()
+        results["reset"] = _post(client, "password/reset", {"phone": TAKEN, "code": code, "password": PASSWORD})
+        results["session"] = client.get("/api/auth/me").status_code
+
+    met = queue_behind(Writer("grant", grant), Writer("recover", recover), holding, release)
+
+    assert met == "blocked"
+    assert results["reset"].status_code == 400 and results["reset"].json()["detail"] == WRONG_CODE
+    assert results["session"] == 401
+    assert _untouched(owner)
+
+
+@pytest.mark.parametrize("change", ["role grant", "promotion", "deactivation", "phone change"])
+def test_a_change_committed_after_the_number_was_looked_up_ends_the_recovery(
+    owner, superuser, sms_outbox, monkeypatch, change
+):
+    code = _recovery_code(sms_outbox)
+    looked_up = accounts_service.phone_owner
+
+    def then_changed(number, **kwargs):
+        found = looked_up(number, **kwargs)
+        if change == "role grant":
+            set_staff_role(actor=superuser, target=owner, role=StaffRole.OPERATOR)
+        elif change == "promotion":
+            get_user_model().objects.filter(pk=owner.pk).update(is_superuser=True, is_staff=True)
+        elif change == "deactivation":
+            get_user_model().objects.filter(pk=owner.pk).update(is_active=False)
+        else:
+            # the login moves with the phone, as the profile service moves them
+            get_user_model().objects.filter(pk=owner.pk).update(phone="+380671110044", username="+380671110044")
+        return found
+
+    monkeypatch.setattr(accounts_service, "phone_owner", then_changed)
+    client = Client()
+
+    reset = _post(client, "password/reset", {"phone": TAKEN, "code": code, "password": PASSWORD})
+
+    assert reset.status_code == 400 and reset.json()["detail"] == WRONG_CODE
+    assert client.get("/api/auth/me").status_code == 401
+    assert _untouched(owner)
+
+
+def test_a_recovery_code_sets_a_password_once(owner, sms_outbox):
+    code = _recovery_code(sms_outbox)
+
+    first = _post(Client(), "password/reset", {"phone": TAKEN, "code": code, "password": PASSWORD})
+    second = _post(Client(), "password/reset", {"phone": TAKEN, "code": code, "password": "Other!2345word"})
+
+    assert first.status_code == 200 and second.status_code == 400
+    owner.refresh_from_db()
+    assert owner.check_password(PASSWORD)
 
 
 def test_without_a_provider_every_number_gets_the_same_refusal(client, owner, settings):

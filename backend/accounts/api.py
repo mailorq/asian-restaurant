@@ -11,7 +11,6 @@ from accounts import challenges, jwt_service, sms
 from accounts import service as accounts_service
 from accounts.models import PhoneChallenge, User
 from accounts.phone import to_e164
-from accounts.roles import is_staff_member
 from accounts.schemas import LoginIn, MessageOut, PhoneIn, RegisterIn, ResetIn, UserOut
 from common.ratelimit import rate_limit
 
@@ -48,13 +47,6 @@ def _send_code(phone: str, purpose: str, text) -> dict:
     except sms.SmsUnavailable as exc:
         raise HttpError(503, "Отправка SMS временно недоступна") from exc
     return {"detail": CODE_SENT}
-
-
-def _recoverable(user: User | None) -> bool:
-    # a staff account is not handed over to whoever holds its phone: an administrator resets it
-    return bool(
-        user and user.is_active and not (user.is_staff or user.is_superuser or is_staff_member(user))
-    )
 
 
 @router.post("/register/code", response=MessageOut, auth=None)
@@ -99,7 +91,7 @@ def register(request, data: RegisterIn):
 @rate_limit("password_code", limit=5, window=600)
 def password_code(request, data: PhoneIn):
     phone = _phone(data.phone)
-    if not _recoverable(accounts_service.phone_owner(phone)):
+    if not accounts_service.recoverable_by_sms(accounts_service.phone_owner(phone)):
         return _send_code(phone, PhoneChallenge.Purpose.RESET, lambda code: None)
     return _send_code(
         phone,
@@ -113,14 +105,10 @@ def password_code(request, data: PhoneIn):
 def password_reset(request, data: ResetIn):
     phone = _phone(data.phone)
     _password(data.password, phone)
-    if not challenges.consume(phone, PhoneChallenge.Purpose.RESET, data.code):
+    user = accounts_service.reset_password_with_code(phone, data.code, data.password)
+    if user is None:
         raise HttpError(400, WRONG_CODE)
-    user = accounts_service.phone_owner(phone)
-    if not _recoverable(user):
-        raise HttpError(400, WRONG_CODE)
-    # a new password changes the session hash, so every other session of the account ends here
-    user.set_password(data.password)
-    user.save(update_fields=["password"])
+    # the new password changed the session hash, so every other session of the account has ended
     login(request, user, backend="django.contrib.auth.backends.ModelBackend")
     return user
 
