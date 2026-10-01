@@ -13,6 +13,8 @@ from orders.models import Order
 
 # the last schema of the release before purchases were recorded against the cart
 BEFORE = ("orders", "0012_outbox_closed_rows_hold_their_aggregate")
+# the schema of the release that recorded them first, with the fingerprint column it reads and writes
+PREVIOUS = ("orders", "0013_order_purchases_leave_the_cart_once")
 ADDRESS = "ул. Пушкина, 12"
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -25,10 +27,12 @@ def migrations():
     MigrationExecutor(connection).migrate(leaves)
 
 
-def _place_as_before(user, product, quantity, cart_id, version, key="old-form", address=ADDRESS):
-    # the rows the previous release wrote for an order, through its own schema: an insert names
+def _place_as_before(
+    user, product, quantity, cart_id, version, key="old-form", address=ADDRESS, state=BEFORE, **columns
+):
+    # the rows an earlier release wrote for an order, through its own schema: an insert names
     # only the columns that release knew
-    apps = MigrationExecutor(connection).loader.project_state([BEFORE]).apps
+    apps = MigrationExecutor(connection).loader.project_state([state]).apps
     price = Decimal(product.price)
     place = apps.get_model("orders", "DeliveryAddress").objects.create(user_id=user.pk, address=address)
     order = apps.get_model("orders", "Order").objects.create(
@@ -41,6 +45,7 @@ def _place_as_before(user, product, quantity, cart_id, version, key="old-form", 
         idempotency_key=key,
         source_cart_id=f"u:{user.pk}:{cart_id}",
         source_cart_version=version,
+        **columns,
     )
     apps.get_model("orders", "OrderItem").objects.create(
         order=order,
@@ -301,3 +306,24 @@ def test_a_review_confirmed_for_a_version_the_cart_moved_past_is_refused(api, us
 
     assert stale.status_code == 409
     assert stale.json()["cart"]["review_order"] == old
+
+
+def test_the_release_before_reads_and_writes_orders_while_this_one_migrates(
+    migrations, user, make_product, seed_cart
+):
+    product = make_product(price="100.00", stock=10)
+    seed_cart(user.id, {product.id: 2}, version=1)
+    cart_id = _cart(user).cart_id
+    MigrationExecutor(connection).migrate([PREVIOUS])
+    as_previous = {"state": PREVIOUS, "cart_clear_pending": True}
+    placed = _place_as_before(user, product, 2, cart_id, 1, key="before", checkout_fingerprint="f" * 64, **as_previous)
+    MigrationExecutor(connection).migrate(migrations)
+    previous = MigrationExecutor(connection).loader.project_state([PREVIOUS]).apps.get_model("orders", "Order")
+
+    # it serves until the runtime is recreated, and selects and inserts every column it knows
+    read = previous.objects.get(pk=placed)
+    written = _place_as_before(user, product, 1, cart_id, 2, key="during", checkout_fingerprint="g" * 64, **as_previous)
+
+    assert read.checkout_fingerprint == "f" * 64
+    assert previous.objects.get(pk=written).checkout_fingerprint == "g" * 64
+    assert Order.objects.get(pk=written).cart_clear_pending is True

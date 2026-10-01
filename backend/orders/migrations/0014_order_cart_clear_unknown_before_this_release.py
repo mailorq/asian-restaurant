@@ -9,9 +9,15 @@ class Migration(migrations.Migration):
     # no order placed before this release recorded whether its cart was cleared, so false would read as
     # cleared: they become unknown, and so does every order a previous release still inserts while this migrates
     operations = [
-        migrations.RemoveField(
-            model_name="order",
-            name="checkout_fingerprint",
+        # only the model lets go of the fingerprint: the release before reads and writes the column while this
+        # one migrates, and a later release drops it once no process of that one can run
+        migrations.SeparateDatabaseAndState(
+            state_operations=[
+                migrations.RemoveField(
+                    model_name="order",
+                    name="checkout_fingerprint",
+                ),
+            ],
         ),
         migrations.AlterField(
             model_name="order",
