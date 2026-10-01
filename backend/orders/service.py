@@ -1,9 +1,9 @@
-import hashlib
-import json
 import logging
 from decimal import Decimal
 
+from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
+from django.db.models import Max
 from ninja.errors import HttpError
 
 from cart import service as cart_service
@@ -66,19 +66,32 @@ def _source_cart_id(user, cart_id: str) -> str:
     return f"u:{user.id}:{cart_id}"
 
 
+def _details(user, raw_address: str, payment_method: str, recipient_name: str) -> tuple[str, str, str]:
+    # what an order keeps of its form, in the form it keeps it
+    return raw_address.strip()[:500], payment_method, (recipient_name or "").strip() or user.first_name or ""
+
+
 @transaction.atomic
 def _create_order(
     user,
     cart_items,
     source_cart_id,
     cart_version,
-    raw_address,
+    details,
     geo_result,
-    payment_method,
     idempotency_key,
-    recipient_name,
-    fingerprint,
+    read_after,
 ):
+    # the customer's checkouts commit one at a time from here, and a snapshot read before another of
+    # their orders committed may hold what that order bought: it is turned back, not bought twice.
+    # orders are created nowhere else, so one committed after the snapshot has a larger key
+    get_user_model().objects.select_for_update(no_key=True).filter(pk=user.pk).first()
+    later = Order.objects.filter(user=user, pk__gt=read_after).exclude(
+        source_cart_id=source_cart_id, source_cart_version=cart_version
+    )
+    if later.exists():
+        raise CheckoutError("cart_changed", "Корзина изменилась, пока оформлялся заказ - проверьте ее состав")
+
     locked = {
         p.id: p
         for p in Product.objects.select_for_update()
@@ -98,9 +111,10 @@ def _create_order(
     if problems:
         raise CheckoutError("cart_changed", "Корзина изменилась — проверьте наличие товаров", problems)
 
+    address_text, payment_method, contact_name = details
     address = DeliveryAddress.objects.create(
         user=user,
-        address=raw_address.strip()[:500],
+        address=address_text,
         lat=geo_result.lat,
         lng=geo_result.lng,
         is_verified=geo_result.found,
@@ -112,14 +126,13 @@ def _create_order(
         status=Order.Status.CREATED,
         payment_method=payment_method,
         phone=user.phone or "",  # from request.user
-        contact_name=(recipient_name or "").strip() or user.first_name or "",
+        contact_name=contact_name,
         delivery_address=address,
         total=Decimal("0.00"),
         idempotency_key=idempotency_key,
         source_cart_id=source_cart_id,
         source_cart_version=cart_version,
         cart_clear_pending=True,
-        checkout_fingerprint=fingerprint,
     )
 
     total = Decimal("0.00")
@@ -161,6 +174,28 @@ def _create_order(
     return order
 
 
+def _bought(order: Order) -> dict[int, int]:
+    return {item.product_id: item.quantity for item in order.items.all()}
+
+
+def _unknown_orders(user, cart):
+    # an order of a previous release recorded nothing about its cart, so that cart is known to be
+    # uncleared only while it is the one the order was built from, still at that version. such a
+    # cart was last written before this release and expires CART_TTL after it, and so can this
+    return Order.objects.filter(
+        source_cart_id=_source_cart_id(user, cart.cart_id),
+        source_cart_version=cart.version,
+        cart_clear_pending__isnull=True,
+    )
+
+
+async def purchases_to_settle(user) -> bool:
+    if await Order.objects.filter(user=user, cart_clear_pending=True).aexists():
+        return True
+    cart = await cart_service.read_state(cart_service.user_key(user.id))
+    return bool(cart.items) and await _unknown_orders(user, cart).aexists()
+
+
 def settle_purchases(user) -> None:
     # an order stays pending from its commit until what it bought is gone from the cart it was
     # built from. the cart store records every order it subtracted, so a retry, a crash in between
@@ -169,9 +204,15 @@ def settle_purchases(user) -> None:
     pending = Order.objects.filter(user=user, cart_clear_pending=True).prefetch_related("items")
     for order in pending:
         cart_id = order.source_cart_id.removeprefix(f"u:{user.id}:")
-        bought = {item.product_id: item.quantity for item in order.items.all()}
-        cart_service.remove_purchased_sync(key, cart_id, order.pk, bought)
+        cart_service.remove_purchased_sync(key, cart_id, order.pk, _bought(order))
         Order.objects.filter(pk=order.pk).update(cart_clear_pending=False)
+
+    cart = cart_service.read_sync(key)
+    unknown = _unknown_orders(user, cart).prefetch_related("items").first() if cart.items else None
+    # only a cart holding exactly what the order bought is cleared, as the previous release itself did
+    if unknown is not None and _bought(unknown) == cart.items:
+        if cart_service.clear_sync(key, cart.version, cart.cart_id):
+            Order.objects.filter(pk=unknown.pk).update(cart_clear_pending=False)
 
 
 def _after_commit(user, order: Order) -> Order:
@@ -187,15 +228,11 @@ def _after_commit(user, order: Order) -> Order:
     return order
 
 
-def _fingerprint(raw_address: str, payment_method: str, recipient_name: str) -> str:
-    form = [raw_address.strip(), payment_method, (recipient_name or "").strip()]
-    return hashlib.sha256(json.dumps(form, ensure_ascii=False).encode()).hexdigest()
-
-
-def _replayed(user, order: Order, fingerprint: str) -> Order:
-    # the same form sent again gets its order; other data under it is another intent, and answering
-    # it with this order would confirm details that were never saved
-    if order.checkout_fingerprint and order.checkout_fingerprint != fingerprint:
+def _replayed(user, order: Order, details: tuple[str, str, str]) -> Order:
+    # the same form sent again gets its order; other details under it are another intent, and
+    # answering it with this order would confirm what was never saved. judged by what the order
+    # kept, so an order of a previous release is judged the same way
+    if (order.delivery_address.address, order.payment_method, order.contact_name) != details:
         raise CheckoutError(
             "checkout_replayed",
             f"Заказ №{order.pk} уже оформлен с другими данными, проверьте его в разделе «Мои заказы»",
@@ -204,23 +241,30 @@ def _replayed(user, order: Order, fingerprint: str) -> Order:
 
 
 def checkout(user, raw_address: str, payment_method: str, idempotency_key: str, recipient_name: str = "") -> Order:
-    fingerprint = _fingerprint(raw_address, payment_method, recipient_name)
+    details = _details(user, raw_address, payment_method, recipient_name)
     existing = Order.objects.filter(user=user, idempotency_key=idempotency_key).first()
     if existing is not None:
-        return _replayed(user, existing, fingerprint)
+        return _replayed(user, existing, details)
+
+    # taken before the cart is read: an order committed after it is one this snapshot cannot account for
+    read_after = Order.objects.filter(user=user).aggregate(latest=Max("pk"))["latest"] or 0
+    key = cart_service.user_key(user.id)
+    cart = cart_service.read_sync(key)
+    # a cart still at the version of an order is that order's snapshot sent again
+    if cart.items:
+        existing = Order.objects.filter(
+            source_cart_id=_source_cart_id(user, cart.cart_id), source_cart_version=cart.version
+        ).first()
+        if existing is not None:
+            return _replayed(user, existing, details)
 
     # what earlier orders bought leaves the cart before it is read, or this order would buy it again
     settle_purchases(user)
-    key = cart_service.user_key(user.id)
     cart = cart_service.read_sync(key)
     cart_items, cart_version = cart.items, cart.version
     if not cart_items:
         raise CheckoutError("empty_cart", "Корзина пуста")
     source_cart_id = _source_cart_id(user, cart.cart_id)
-
-    existing = Order.objects.filter(source_cart_id=source_cart_id, source_cart_version=cart_version).first()
-    if existing is not None:
-        return _replayed(user, existing, fingerprint)
 
     geo_result = _geocode_safe(raw_address)  # external http, kept out of the transaction
 
@@ -230,12 +274,10 @@ def checkout(user, raw_address: str, payment_method: str, idempotency_key: str, 
             cart_items,
             source_cart_id,
             cart_version,
-            raw_address,
+            details,
             geo_result,
-            payment_method,
             idempotency_key,
-            recipient_name,
-            fingerprint,
+            read_after,
         )
     except IntegrityError:
         # a concurrent submit won the unique(idempotency_key) / (source_cart_id, version) race
@@ -244,7 +286,7 @@ def checkout(user, raw_address: str, payment_method: str, idempotency_key: str, 
             or Order.objects.filter(source_cart_id=source_cart_id, source_cart_version=cart_version).first()
         )
         if existing is not None:
-            return _replayed(user, existing, fingerprint)
+            return _replayed(user, existing, details)
         raise
 
     # remove exactly what was bought: an item added mid-checkout stays, and the purchased

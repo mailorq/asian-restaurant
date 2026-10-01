@@ -11,7 +11,6 @@ from cart.schemas import AddItemIn, CartConflictOut, CartOut, SetQtyIn
 from common.ratelimit import rate_limit
 from menu.models import Product
 from orders import service as order_service
-from orders.models import Order
 
 router = Router(tags=["cart"])
 
@@ -54,7 +53,7 @@ async def _resolve(request, response: HttpResponse) -> str:
         key = service.user_key(user.id)
         # before the guest merge and any write: both move the cart on, and what an order bought
         # has to leave it first, however the request that placed that order ended
-        if await Order.objects.filter(user_id=user.id, cart_clear_pending=True).aexists():
+        if await order_service.purchases_to_settle(user):
             await sync_to_async(order_service.settle_purchases)(user)
         guest_id = _read_cookie(request)
         if guest_id:

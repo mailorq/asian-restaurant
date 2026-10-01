@@ -128,10 +128,10 @@ export function useCheckout() {
       qc.invalidateQueries({ queryKey: ["cart"] });
       qc.invalidateQueries({ queryKey: ["orders"] });
     },
-    // an error does not prove that no order was placed, and a replayed form proves one was
+    // an error does not prove that no order was placed, and a conflict means the cart moved on
     onError: (err) => {
       qc.invalidateQueries({ queryKey: ["orders"] });
-      if (err instanceof ApiError && (err.body as { code?: string } | null)?.code === "checkout_replayed") {
+      if (err instanceof ApiError && err.status === 409) {
         qc.invalidateQueries({ queryKey: ["cart"] });
       }
     },

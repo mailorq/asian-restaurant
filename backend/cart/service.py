@@ -183,12 +183,16 @@ def guest_key(cart_id: str) -> str:
     return f"cart:g:{cart_id}"
 
 
-async def read(key: str) -> tuple[dict[int, int], int]:
+async def read_state(key: str) -> CartState:
     try:
         raw = await _redis().hgetall(key)
     except RedisError as exc:
         raise HttpError(503, "Корзина временно недоступна. Повторите позже.") from exc
-    state = _parse(raw)
+    return _parse(raw)
+
+
+async def read(key: str) -> tuple[dict[int, int], int]:
+    state = await read_state(key)
     return state.items, state.version
 
 
