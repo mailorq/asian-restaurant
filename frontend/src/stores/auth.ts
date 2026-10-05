@@ -2,10 +2,10 @@ import { create } from "zustand";
 
 import { api } from "../api/client";
 import { queryClient } from "../lib/queryClient";
+import { onIdentityChange } from "../lib/sessionCache";
 
-// identity changes may trigger a guest->user cart merge server-side; refetch it
-function refreshCart() {
-  queryClient.invalidateQueries({ queryKey: ["cart"] });
+function identity(user: CurrentUser | null): number | null {
+  return user?.id ?? null;
 }
 
 export interface CurrentUser {
@@ -26,18 +26,21 @@ interface AuthState {
   logout: () => Promise<void>;
 }
 
-export const useAuth = create<AuthState>((set) => ({
+export const useAuth = create<AuthState>((set, get) => ({
   user: null,
   ready: false,
   setUser: (user) => {
+    // a login or recovery also merges any guest cart server-side; dropping the cache refetches it
+    onIdentityChange(queryClient, identity(get().user), identity(user));
     set({ user });
-    refreshCart();
   },
   refresh: async () => {
     try {
       const user = await api<CurrentUser>("/auth/me");
+      onIdentityChange(queryClient, identity(get().user), identity(user));
       set({ user, ready: true });
     } catch {
+      onIdentityChange(queryClient, identity(get().user), null);
       set({ user: null, ready: true });
     }
   },
@@ -48,7 +51,7 @@ export const useAuth = create<AuthState>((set) => ({
     } catch {
       /* clear locally regardless */
     }
+    onIdentityChange(queryClient, identity(get().user), null);
     set({ user: null });
-    refreshCart();
   },
 }));

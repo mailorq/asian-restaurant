@@ -7,5 +7,5 @@
     "rootDir": "src",
     "lib": ["ES2022"]
   },
-  "include": ["src/lib/commandIntents.ts"]
+  "include": ["src/lib/commandIntents.ts", "src/lib/sessionCache.ts"]
 }
