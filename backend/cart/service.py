@@ -376,6 +376,31 @@ def clear_sync(key: str, expected_version: int, expected_cart_id: str) -> bool:
     return bool(cleared)
 
 
+# claims the cart at the version and identity its owner saw, leaving its contents untouched but
+# bumping the version: a write addressed to that version can no longer win, and the next write has to
+# use the version this produced, so what the owner confirmed is exactly what they saw. keeps the
+# items so the claim is about agreeing to them, not changing them
+# ARGV[1] = expected version, ARGV[2] = ttl seconds, ARGV[3] = expected identity
+_CLAIM_CAS_LUA = """
+local cur = tonumber(redis.call('HGET', KEYS[1], 'v')) or 0
+if cur == tonumber(ARGV[1]) and redis.call('HGET', KEYS[1], 'id') == ARGV[3] then
+  redis.call('HSET', KEYS[1], 'v', cur + 1)
+  redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+  return cur + 1
+end
+return 0
+"""
+
+
+def claim_sync(key: str, expected_version: int, expected_cart_id: str) -> int:
+    """bumps and returns the version when the cart is still the seen snapshot, else 0"""
+    try:
+        version = _sync_redis().eval(_CLAIM_CAS_LUA, 1, key, int(expected_version), CART_TTL, expected_cart_id)
+    except RedisError as exc:
+        raise HttpError(503, "Корзина временно недоступна. Повторите позже.") from exc
+    return int(version)
+
+
 # subtracts exactly the purchased quantities from the cart the order was built from: an item added
 # during checkout stays, and a cart rebuilt after that one expired is another cart and stays untouched.
 # each order is subtracted once, whoever asks and however often

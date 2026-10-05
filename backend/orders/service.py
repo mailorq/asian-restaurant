@@ -202,10 +202,21 @@ async def cart_review(user) -> int | None:
 
 def confirm_cart(user, expected_version: int) -> bool:
     """the owner keeps the cart as it is at the version they saw; false when it has moved on since"""
-    cart = cart_service.read_sync(cart_service.user_key(user.id))
+    key = cart_service.user_key(user.id)
+    cart = cart_service.read_sync(key)
     if cart.version != expected_version:
         return False
-    _unknown_orders(user, cart).update(cart_clear_pending=False)
+    unknown = _unknown_orders(user, cart)
+    if not unknown.exists():
+        # nothing of a previous release to settle: the cart is already as its owner wants it
+        return True
+    # claim the seen snapshot before settling: the version check and its effect are one atomic step,
+    # so a cart write at this version and this confirmation cannot both win and a change that commits
+    # after the owner looked cannot be approved under the version they saw. a crash before the settle
+    # below leaves the orders unsettled and the cart at a version the owner re-confirms
+    if not cart_service.claim_sync(key, expected_version, cart.cart_id):
+        return False
+    unknown.update(cart_clear_pending=False)
     return True
 
 
