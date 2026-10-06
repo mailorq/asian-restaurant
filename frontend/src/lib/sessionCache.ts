@@ -1,4 +1,18 @@
-import type { QueryClient } from "@tanstack/react-query";
+import { useCallback } from "react";
+import {
+  useMutation,
+  type DefaultError,
+  type MutateOptions,
+  type QueryClient,
+  type UseMutationOptions,
+  type UseMutationResult,
+} from "@tanstack/react-query";
+
+let session = 0;
+
+export function currentSession(): number {
+  return session;
+}
 
 // every cached query belongs to the signed-in account: its orders, its last used address, its cart,
 // the screens a staff member sees. when the identity changes - login, logout, register, a password
@@ -14,5 +28,69 @@ export function onIdentityChange(
   if (previousId === nextId) {
     return;
   }
+  session += 1;
   qc.clear();
+}
+
+// clearing the cache does not stop a mutation already on its way: its answer still arrives and its
+// callbacks still run. each run is stamped with the session it started in, and its callbacks run only
+// while that session lasts, so a late answer to the previous account neither writes the next one's
+// cache nor speaks to them
+export function sessionMutation<TData, TError, TVariables>(
+  options: UseMutationOptions<TData, TError, TVariables, number>,
+): UseMutationOptions<TData, TError, TVariables, number> {
+  const { onSuccess, onError, onSettled } = options;
+  return {
+    ...options,
+    onMutate: () => session,
+    onSuccess:
+      onSuccess &&
+      ((data, variables, started, context) =>
+        started === session ? onSuccess(data, variables, started, context) : undefined),
+    onError:
+      onError &&
+      ((error, variables, started, context) =>
+        started === session ? onError(error, variables, started, context) : undefined),
+    onSettled:
+      onSettled &&
+      ((data, error, variables, started, context) =>
+        started === session ? onSettled(data, error, variables, started, context) : undefined),
+  };
+}
+
+// what a screen passes to mutate() gets the stamp of the run it belongs to and is held to it the same way
+export function sessionCallbacks<TData, TError, TVariables>(
+  callbacks: MutateOptions<TData, TError, TVariables, number>,
+): MutateOptions<TData, TError, TVariables, number> {
+  const { onSuccess, onError, onSettled } = callbacks;
+  return {
+    onSuccess:
+      onSuccess &&
+      ((data, variables, started, context) => {
+        if (started === session) onSuccess(data, variables, started, context);
+      }),
+    onError:
+      onError &&
+      ((error, variables, started, context) => {
+        if (started === session) onError(error, variables, started, context);
+      }),
+    onSettled:
+      onSettled &&
+      ((data, error, variables, started, context) => {
+        if (started === session) onSettled(data, error, variables, started, context);
+      }),
+  };
+}
+
+export function useSessionMutation<TData = unknown, TError = DefaultError, TVariables = void>(
+  options: UseMutationOptions<TData, TError, TVariables, number>,
+): UseMutationResult<TData, TError, TVariables, number> {
+  const mutation = useMutation(sessionMutation(options));
+  const { mutate } = mutation;
+  const guarded = useCallback(
+    (variables: TVariables, callbacks?: MutateOptions<TData, TError, TVariables, number>) =>
+      mutate(variables, callbacks && sessionCallbacks(callbacks)),
+    [mutate],
+  );
+  return { ...mutation, mutate: guarded };
 }

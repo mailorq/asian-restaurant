@@ -1,8 +1,9 @@
-import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient, type UseMutationOptions } from "@tanstack/react-query";
 
 import { api, ApiError } from "./client";
 import { useToast } from "../stores/toast";
 import type { Category } from "../lib/menu";
+import { currentSession, useSessionMutation } from "../lib/sessionCache";
 
 export interface CartLine {
   product_id: number;
@@ -83,13 +84,15 @@ async function writeWithVersion(
   call: (expected: number | undefined) => Promise<Cart>,
   retry: boolean,
 ): Promise<Cart> {
+  const started = currentSession();
   const current = qc.getQueryData<Cart>(CART_KEY);
   try {
     return await call(current?.version);
   } catch (e) {
     const fresh = conflictCart(e);
     if (!fresh) throw e;
-    if (retry) {
+    // the retry goes out only in the session the action started in, never on behalf of the next account
+    if (retry && started === currentSession()) {
       try {
         return await call(fresh.version);
       } catch (e2) {
@@ -100,14 +103,18 @@ async function writeWithVersion(
   }
 }
 
+export const cartQuery = { queryKey: CART_KEY, queryFn: () => api<Cart>("/cart"), staleTime: 30_000 };
+
 export function useCartQuery() {
-  return useQuery({ queryKey: CART_KEY, queryFn: () => api<Cart>("/cart"), staleTime: 30_000 });
+  return useQuery(cartQuery);
 }
 
-function useCartMutation<V>(run: (qc: QueryClient, vars: V) => Promise<Cart>) {
-  const qc = useQueryClient();
-  const notify = useToast((s) => s.notify);
-  return useMutation({
+export function cartMutation<V>(
+  qc: QueryClient,
+  notify: Notify,
+  run: (qc: QueryClient, vars: V) => Promise<Cart>,
+): UseMutationOptions<Cart, Error, V, number> {
+  return {
     mutationFn: (vars: V) => run(qc, vars),
     onSuccess: (cart) => {
       qc.setQueryData(CART_KEY, cart);
@@ -121,78 +128,94 @@ function useCartMutation<V>(run: (qc: QueryClient, vars: V) => Promise<Cart>) {
         notify(e instanceof Error ? e.message : "Не удалось обновить корзину", "error");
       }
     },
-  });
+  };
+}
+
+function useCartMutation<V>(run: (qc: QueryClient, vars: V) => Promise<Cart>) {
+  const qc = useQueryClient();
+  const notify = useToast((s) => s.notify);
+  return useSessionMutation(cartMutation(qc, notify, run));
+}
+
+export function addItem(qc: QueryClient, vars: { productId: number; quantity?: number }) {
+  return writeWithVersion(
+    qc,
+    (expected) =>
+      api<Cart>("/cart/items", {
+        method: "POST",
+        body: JSON.stringify({
+          product_id: vars.productId,
+          quantity: vars.quantity ?? 1,
+          expected_version: expected,
+        }),
+      }),
+    true,
+  );
+}
+
+export function setItem(qc: QueryClient, vars: { productId: number; quantity: number }) {
+  return writeWithVersion(
+    qc,
+    (expected) =>
+      api<Cart>(`/cart/items/${vars.productId}`, {
+        method: "PUT",
+        body: JSON.stringify({ quantity: vars.quantity, expected_version: expected }),
+      }),
+    false,
+  );
+}
+
+export function removeItem(qc: QueryClient, vars: { productId: number }) {
+  return writeWithVersion(
+    qc,
+    (expected) =>
+      api<Cart>(
+        `/cart/items/${vars.productId}${expected === undefined ? "" : `?expected_version=${expected}`}`,
+        { method: "DELETE" },
+      ),
+    false,
+  );
+}
+
+export function confirmCart(qc: QueryClient) {
+  return writeWithVersion(
+    qc,
+    (expected) =>
+      api<Cart>("/cart/review", {
+        method: "POST",
+        body: JSON.stringify({ expected_version: expected }),
+      }),
+    false,
+  );
+}
+
+export function clearCart(qc: QueryClient) {
+  return writeWithVersion(
+    qc,
+    (expected) =>
+      api<Cart>(`/cart${expected === undefined ? "" : `?expected_version=${expected}`}`, {
+        method: "DELETE",
+      }),
+    false,
+  );
 }
 
 export function useAddItem() {
-  return useCartMutation((qc: QueryClient, vars: { productId: number; quantity?: number }) =>
-    writeWithVersion(
-      qc,
-      (expected) =>
-        api<Cart>("/cart/items", {
-          method: "POST",
-          body: JSON.stringify({
-            product_id: vars.productId,
-            quantity: vars.quantity ?? 1,
-            expected_version: expected,
-          }),
-        }),
-      true,
-    ),
-  );
+  return useCartMutation(addItem);
 }
 
 export function useSetItem() {
-  return useCartMutation((qc: QueryClient, vars: { productId: number; quantity: number }) =>
-    writeWithVersion(
-      qc,
-      (expected) =>
-        api<Cart>(`/cart/items/${vars.productId}`, {
-          method: "PUT",
-          body: JSON.stringify({ quantity: vars.quantity, expected_version: expected }),
-        }),
-      false,
-    ),
-  );
+  return useCartMutation(setItem);
 }
 
 export function useRemoveItem() {
-  return useCartMutation((qc: QueryClient, vars: { productId: number }) =>
-    writeWithVersion(
-      qc,
-      (expected) =>
-        api<Cart>(
-          `/cart/items/${vars.productId}${expected === undefined ? "" : `?expected_version=${expected}`}`,
-          { method: "DELETE" },
-        ),
-      false,
-    ),
-  );
+  return useCartMutation(removeItem);
 }
 
 export function useConfirmCart() {
-  return useCartMutation<void>((qc: QueryClient) =>
-    writeWithVersion(
-      qc,
-      (expected) =>
-        api<Cart>("/cart/review", {
-          method: "POST",
-          body: JSON.stringify({ expected_version: expected }),
-        }),
-      false,
-    ),
-  );
+  return useCartMutation<void>(confirmCart);
 }
 
 export function useClearCart() {
-  return useCartMutation<void>((qc: QueryClient) =>
-    writeWithVersion(
-      qc,
-      (expected) =>
-        api<Cart>(`/cart${expected === undefined ? "" : `?expected_version=${expected}`}`, {
-          method: "DELETE",
-        }),
-      false,
-    ),
-  );
+  return useCartMutation<void>(clearCart);
 }

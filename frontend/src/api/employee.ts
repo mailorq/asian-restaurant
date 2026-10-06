@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiError, api } from "./client";
 import {
@@ -14,6 +14,7 @@ import {
 } from "../lib/commandIntents";
 import type { Order, OrderStatus, PagedOrders } from "./orders";
 import type { Category } from "../lib/menu";
+import { useSessionMutation } from "../lib/sessionCache";
 
 export interface InventoryItem {
   id: number;
@@ -97,7 +98,7 @@ export function useEmployeeOrders(status: OrderStatus | "", page = 1, pageSize =
 
 export function useTransitionOrder() {
   const qc = useQueryClient();
-  return useMutation({
+  return useSessionMutation({
     mutationFn: (vars: {
       orderId: number;
       to_status: OrderStatus;
@@ -167,7 +168,7 @@ export function usePendingCommands(userId: number) {
 
 function useCommandMutation<V>(userId: number, run: (vars: V) => Promise<Intent>) {
   const qc = useQueryClient();
-  return useMutation({
+  return useSessionMutation({
     mutationFn: run,
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ["employee", "orders"] });
@@ -226,7 +227,7 @@ export function useInventory(search: string) {
 
 export function useAdjustStock() {
   const qc = useQueryClient();
-  return useMutation({
+  return useSessionMutation({
     mutationFn: (vars: { productId: number; new_quantity: number; reason: string; expected_version: number }) =>
       api<InventoryItem>(`/employee/inventory/${vars.productId}/adjust`, {
         method: "POST",
@@ -283,7 +284,7 @@ export function useCustomerOrders(
 
 export function useSetRole() {
   const qc = useQueryClient();
-  return useMutation({
+  return useSessionMutation({
     mutationFn: (vars: { userId: number; role: StaffRole | null }) =>
       api<EmployeeUser>(`/employee/users/${vars.userId}/role`, {
         method: "POST",

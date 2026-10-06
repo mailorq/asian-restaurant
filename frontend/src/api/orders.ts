@@ -1,7 +1,8 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient, type UseMutationOptions } from "@tanstack/react-query";
 
 import { ApiError, api } from "./client";
 import type { Cart } from "./cart";
+import { useSessionMutation } from "../lib/sessionCache";
 
 export type OrderStatus =
   | "created"
@@ -101,7 +102,7 @@ export function useLastAddress(enabled = true) {
 }
 
 export function useVerifyAddress() {
-  return useMutation({
+  return useSessionMutation({
     mutationFn: (address: string) =>
       api<AddressVerification>("/orders/address/verify", {
         method: "POST",
@@ -110,15 +111,16 @@ export function useVerifyAddress() {
   });
 }
 
-export function useCheckout() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (vars: {
-      address: string;
-      payment_method: "cash" | "card";
-      recipient_name: string;
-      idempotency_key: string;
-    }) =>
+interface CheckoutForm {
+  address: string;
+  payment_method: "cash" | "card";
+  recipient_name: string;
+  idempotency_key: string;
+}
+
+export function checkoutMutation(qc: QueryClient): UseMutationOptions<Order, Error, CheckoutForm, number> {
+  return {
+    mutationFn: (vars) =>
       api<Order>("/orders/checkout", {
         method: "POST",
         body: JSON.stringify(vars),
@@ -135,5 +137,9 @@ export function useCheckout() {
         qc.invalidateQueries({ queryKey: ["cart"] });
       }
     },
-  });
+  };
+}
+
+export function useCheckout() {
+  return useSessionMutation(checkoutMutation(useQueryClient()));
 }

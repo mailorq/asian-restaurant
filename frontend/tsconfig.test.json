@@ -5,7 +5,13 @@
     "allowImportingTsExtensions": false,
     "outDir": ".test-build",
     "rootDir": "src",
-    "lib": ["ES2022"]
+    "lib": ["ES2022", "DOM"]
   },
-  "include": ["src/lib/commandIntents.ts", "src/lib/sessionCache.ts"]
+  "include": [
+    "src/lib/commandIntents.ts",
+    "src/lib/sessionCache.ts",
+    "src/api/cart.ts",
+    "src/api/orders.ts",
+    "src/stores/auth.ts"
+  ]
 }
