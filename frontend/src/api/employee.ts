@@ -14,6 +14,7 @@ import {
 } from "../lib/commandIntents";
 import type { Order, OrderStatus, PagedOrders } from "./orders";
 import type { Category } from "../lib/menu";
+import { currentSession } from "../lib/session";
 import { useSessionMutation } from "../lib/sessionCache";
 
 export interface InventoryItem {
@@ -145,19 +146,28 @@ const browserStore: Store = {
   },
 };
 
-const commandDeps: Deps = {
-  send: (t, key) =>
-    api<Command>(`/employee/orders/${t.orderId}/transition-commands`, {
-      method: "POST",
-      headers: { "Idempotency-Key": key },
-      body: JSON.stringify({ expected_status: t.expected_status, target_status: t.to_status, reason: t.note ?? "" }),
-    }),
-  read: (commandId) => api<Command>(`/employee/commands/${commandId}`),
-  store: browserStore,
-  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  newKey: () => crypto.randomUUID(),
-  now: () => Date.now(),
-};
+// a command is watched and resent for seconds; every request of one run belongs to the session it started
+// in, and the operations service keys a command by its actor, so a resend for the next account would be
+// another command
+export function commandDeps(session = currentSession()): Deps {
+  return {
+    send: (t, key) =>
+      api<Command>(
+        `/employee/orders/${t.orderId}/transition-commands`,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": key },
+          body: JSON.stringify({ expected_status: t.expected_status, target_status: t.to_status, reason: t.note ?? "" }),
+        },
+        session,
+      ),
+    read: (commandId) => api<Command>(`/employee/commands/${commandId}`, {}, session),
+    store: browserStore,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    newKey: () => crypto.randomUUID(),
+    now: () => Date.now(),
+  };
+}
 
 export function usePendingCommands(userId: number) {
   return useQuery({
@@ -178,11 +188,11 @@ function useCommandMutation<V>(userId: number, run: (vars: V) => Promise<Intent>
 }
 
 export function useTransitionCommand(userId: number) {
-  return useCommandMutation(userId, (transition: Transition) => submit(commandDeps, userId, transition));
+  return useCommandMutation(userId, (transition: Transition) => submit(commandDeps(), userId, transition));
 }
 
 export function useResumeCommand(userId: number) {
-  return useCommandMutation(userId, (key: string) => resume(commandDeps, userId, key));
+  return useCommandMutation(userId, (key: string) => resume(commandDeps(), userId, key));
 }
 
 export function useDismissCommand(userId: number) {

@@ -3,7 +3,8 @@ import { useQuery, useQueryClient, type QueryClient, type UseMutationOptions } f
 import { api, ApiError } from "./client";
 import { useToast } from "../stores/toast";
 import type { Category } from "../lib/menu";
-import { currentSession, useSessionMutation } from "../lib/sessionCache";
+import { currentSession } from "../lib/session";
+import { useSessionMutation } from "../lib/sessionCache";
 
 export interface CartLine {
   product_id: number;
@@ -81,20 +82,20 @@ function surface(cart: Cart, notify: Notify): void {
 // the fresh cart (CartConflictError) and let the user repeat the action.
 async function writeWithVersion(
   qc: QueryClient,
-  call: (expected: number | undefined) => Promise<Cart>,
+  call: (expected: number | undefined, session: number) => Promise<Cart>,
   retry: boolean,
 ): Promise<Cart> {
-  const started = currentSession();
+  // both attempts belong to the session the action started in, so the retry is never sent for the next account
+  const session = currentSession();
   const current = qc.getQueryData<Cart>(CART_KEY);
   try {
-    return await call(current?.version);
+    return await call(current?.version, session);
   } catch (e) {
     const fresh = conflictCart(e);
     if (!fresh) throw e;
-    // the retry goes out only in the session the action started in, never on behalf of the next account
-    if (retry && started === currentSession()) {
+    if (retry) {
       try {
-        return await call(fresh.version);
+        return await call(fresh.version, session);
       } catch (e2) {
         throw new CartConflictError(conflictCart(e2) ?? fresh);
       }
@@ -140,15 +141,19 @@ function useCartMutation<V>(run: (qc: QueryClient, vars: V) => Promise<Cart>) {
 export function addItem(qc: QueryClient, vars: { productId: number; quantity?: number }) {
   return writeWithVersion(
     qc,
-    (expected) =>
-      api<Cart>("/cart/items", {
-        method: "POST",
-        body: JSON.stringify({
-          product_id: vars.productId,
-          quantity: vars.quantity ?? 1,
-          expected_version: expected,
-        }),
-      }),
+    (expected, session) =>
+      api<Cart>(
+        "/cart/items",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            product_id: vars.productId,
+            quantity: vars.quantity ?? 1,
+            expected_version: expected,
+          }),
+        },
+        session,
+      ),
     true,
   );
 }
@@ -156,11 +161,12 @@ export function addItem(qc: QueryClient, vars: { productId: number; quantity?: n
 export function setItem(qc: QueryClient, vars: { productId: number; quantity: number }) {
   return writeWithVersion(
     qc,
-    (expected) =>
-      api<Cart>(`/cart/items/${vars.productId}`, {
-        method: "PUT",
-        body: JSON.stringify({ quantity: vars.quantity, expected_version: expected }),
-      }),
+    (expected, session) =>
+      api<Cart>(
+        `/cart/items/${vars.productId}`,
+        { method: "PUT", body: JSON.stringify({ quantity: vars.quantity, expected_version: expected }) },
+        session,
+      ),
     false,
   );
 }
@@ -168,10 +174,11 @@ export function setItem(qc: QueryClient, vars: { productId: number; quantity: nu
 export function removeItem(qc: QueryClient, vars: { productId: number }) {
   return writeWithVersion(
     qc,
-    (expected) =>
+    (expected, session) =>
       api<Cart>(
         `/cart/items/${vars.productId}${expected === undefined ? "" : `?expected_version=${expected}`}`,
         { method: "DELETE" },
+        session,
       ),
     false,
   );
@@ -180,11 +187,8 @@ export function removeItem(qc: QueryClient, vars: { productId: number }) {
 export function confirmCart(qc: QueryClient) {
   return writeWithVersion(
     qc,
-    (expected) =>
-      api<Cart>("/cart/review", {
-        method: "POST",
-        body: JSON.stringify({ expected_version: expected }),
-      }),
+    (expected, session) =>
+      api<Cart>("/cart/review", { method: "POST", body: JSON.stringify({ expected_version: expected }) }, session),
     false,
   );
 }
@@ -192,10 +196,8 @@ export function confirmCart(qc: QueryClient) {
 export function clearCart(qc: QueryClient) {
   return writeWithVersion(
     qc,
-    (expected) =>
-      api<Cart>(`/cart${expected === undefined ? "" : `?expected_version=${expected}`}`, {
-        method: "DELETE",
-      }),
+    (expected, session) =>
+      api<Cart>(`/cart${expected === undefined ? "" : `?expected_version=${expected}`}`, { method: "DELETE" }, session),
     false,
   );
 }

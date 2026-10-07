@@ -8,11 +8,7 @@ import {
   type UseMutationResult,
 } from "@tanstack/react-query";
 
-let session = 0;
-
-export function currentSession(): number {
-  return session;
-}
+import { currentSession, endSession } from "./session";
 
 // every cached query belongs to the signed-in account: its orders, its last used address, its cart,
 // the screens a staff member sees. when the identity changes - login, logout, register, a password
@@ -28,7 +24,7 @@ export function onIdentityChange(
   if (previousId === nextId) {
     return;
   }
-  session += 1;
+  endSession();
   qc.clear();
 }
 
@@ -42,19 +38,19 @@ export function sessionMutation<TData, TError, TVariables>(
   const { onSuccess, onError, onSettled } = options;
   return {
     ...options,
-    onMutate: () => session,
+    onMutate: () => currentSession(),
     onSuccess:
       onSuccess &&
       ((data, variables, started, context) =>
-        started === session ? onSuccess(data, variables, started, context) : undefined),
+        started === currentSession() ? onSuccess(data, variables, started, context) : undefined),
     onError:
       onError &&
       ((error, variables, started, context) =>
-        started === session ? onError(error, variables, started, context) : undefined),
+        started === currentSession() ? onError(error, variables, started, context) : undefined),
     onSettled:
       onSettled &&
       ((data, error, variables, started, context) =>
-        started === session ? onSettled(data, error, variables, started, context) : undefined),
+        started === currentSession() ? onSettled(data, error, variables, started, context) : undefined),
   };
 }
 
@@ -67,17 +63,17 @@ export function sessionCallbacks<TData, TError, TVariables>(
     onSuccess:
       onSuccess &&
       ((data, variables, started, context) => {
-        if (started === session) onSuccess(data, variables, started, context);
+        if (started === currentSession()) onSuccess(data, variables, started, context);
       }),
     onError:
       onError &&
       ((error, variables, started, context) => {
-        if (started === session) onError(error, variables, started, context);
+        if (started === currentSession()) onError(error, variables, started, context);
       }),
     onSettled:
       onSettled &&
       ((data, error, variables, started, context) => {
-        if (started === session) onSettled(data, error, variables, started, context);
+        if (started === currentSession()) onSettled(data, error, variables, started, context);
       }),
   };
 }

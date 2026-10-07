@@ -1,6 +1,8 @@
 // same-origin fetch wrapper; attaches the csrf token on writes and surfaces the
 // server's error detail so the ui can show a meaningful message.
 
+import { currentSession } from "../lib/session";
+
 export class ApiError extends Error {
   status: number;
   body: unknown;
@@ -28,13 +30,18 @@ async function csrfToken(): Promise<string | null> {
   return getCookie("csrftoken");
 }
 
-export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+// a request belongs to the session it was made in, or to the one a flow of several requests passes: the
+// browser sends whoever is signed in at the moment it leaves, so once its session ended it is not sent
+export async function api<T>(path: string, init: RequestInit = {}, session = currentSession()): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
   if (init.body) headers.set("Content-Type", "application/json");
   if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
     const csrf = await csrfToken();
     if (csrf) headers.set("X-CSRFToken", csrf);
+  }
+  if (session !== currentSession()) {
+    throw new ApiError("Сеанс сменился, запрос не отправлен", 0);
   }
 
   let resp: Response;

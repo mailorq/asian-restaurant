@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { register } from "node:module";
 import test from "node:test";
 
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
-import { onIdentityChange } from "../.test-build/lib/sessionCache.js";
+register("./resolve-js.mjs", import.meta.url);
+
+const { onIdentityChange } = await import("../.test-build/lib/sessionCache.js");
 
 const ORDERS_KEY = ["orders", 1, 20];
 const ADDRESS_KEY = ["last-address"];
