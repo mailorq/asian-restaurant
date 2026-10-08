@@ -48,7 +48,7 @@ export function EmployeePage() {
         <p className="font-medium">Войдите как сотрудник</p>
         <button
           onClick={() => openModal("auth", "login")}
-          className="mt-4 rounded-full bg-primary px-6 py-2.5 text-sm font-medium text-primary-contrast hover:bg-primary-hover"
+          className="btn btn-primary mt-4 h-11 px-6 text-sm"
         >
           Войти
         </button>
@@ -62,7 +62,7 @@ export function EmployeePage() {
         <p className="font-medium">Нет доступа к панели сотрудника</p>
         <button
           onClick={() => navigate({ name: "home" })}
-          className="mt-4 rounded-full border border-border px-6 py-2.5 text-sm font-medium text-muted hover:text-text"
+          className="btn btn-secondary mt-4 h-11 px-6 text-sm text-muted"
         >
           На витрину
         </button>
@@ -85,7 +85,7 @@ export function EmployeePage() {
             <ThemeToggle />
             <button
               onClick={() => navigate({ name: "home" })}
-              className="hidden rounded-full border border-border px-4 py-2 text-sm font-medium text-muted transition-colors hover:text-text sm:block"
+              className="btn btn-secondary hidden h-10 min-h-10 px-4 text-sm text-muted sm:inline-flex"
             >
               На витрину
             </button>

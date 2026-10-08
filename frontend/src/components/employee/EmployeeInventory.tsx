@@ -57,7 +57,7 @@ function InventoryRow({ item }: { item: InventoryItem }) {
                 setQty(item.stock_quantity);
                 setEditing(true);
               }}
-              className="rounded-full border border-border px-3.5 py-1.5 text-sm font-medium text-muted hover:border-accent hover:text-accent"
+              className="btn btn-secondary h-9 min-h-9 px-4 text-sm text-muted"
             >
               Изменить
             </button>
@@ -74,7 +74,7 @@ function InventoryRow({ item }: { item: InventoryItem }) {
               min={0}
               value={qty}
               onChange={(e) => setQty(Math.max(0, Number(e.target.value)))}
-              className="tnum h-10 w-28 rounded-xl border border-border bg-surface-2 px-3 focus:border-primary focus:outline-none"
+              className="input tnum h-10 w-28"
             />
           </label>
           <label className="block flex-1">
@@ -83,19 +83,19 @@ function InventoryRow({ item }: { item: InventoryItem }) {
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               placeholder="поставка, инвентаризация, списание…"
-              className="h-10 w-full rounded-xl border border-border bg-surface-2 px-3 focus:border-primary focus:outline-none"
+              className="input h-10"
             />
           </label>
           <button
             onClick={save}
             disabled={adjust.isPending}
-            className="h-10 rounded-xl bg-primary px-4 text-sm font-medium text-primary-contrast hover:bg-primary-hover disabled:opacity-60"
+            className="btn btn-primary h-10 min-h-10 px-4 text-sm"
           >
             Сохранить
           </button>
           <button
             onClick={() => setEditing(false)}
-            className="h-10 rounded-xl px-3 text-sm font-medium text-muted hover:text-text"
+            className="btn btn-ghost h-10 min-h-10 px-3 text-sm"
           >
             Отмена
           </button>
@@ -111,7 +111,7 @@ export function EmployeeInventory() {
 
   return (
     <div>
-      <div className="mb-5 flex items-center gap-2 rounded-xl border border-border bg-surface-2 px-3.5">
+      <div className="mb-5 flex items-center gap-2 rounded-xl border border-border bg-surface-2 px-3.5 transition-[border-color,box-shadow] focus-within:border-accent focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--accent)_22%,transparent)]">
         <Icon name="search" size={18} className="text-muted" />
         <input
           value={search}

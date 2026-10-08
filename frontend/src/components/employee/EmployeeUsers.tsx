@@ -37,7 +37,7 @@ const SORTS: { value: CustomerOrderSort; label: string }[] = [
 const SCOPES: { value: CustomerOrderScope; label: string }[] = [
   { value: "all", label: "Все" },
   { value: "active", label: "Активные" },
-  { value: "history", label: "Завершённые" },
+  { value: "history", label: "Завершенные" },
 ];
 
 function OrderRow({ order }: { order: CustomerOrderPreview }) {
@@ -136,7 +136,7 @@ function CustomerOrders({ userId, total }: { userId: number; total: number }) {
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               disabled={page >= totalPages}
               className="grid h-8 w-8 place-items-center rounded-full border border-border hover:text-text disabled:opacity-40"
-              aria-label="Вперёд"
+              aria-label="Вперед"
             >
               <Icon name="arrowRight" size={14} />
             </button>
@@ -233,7 +233,7 @@ export function EmployeeUsers() {
 
   return (
     <div>
-      <div className="mb-5 flex items-center gap-2 rounded-xl border border-border bg-surface-2 px-3.5">
+      <div className="mb-5 flex items-center gap-2 rounded-xl border border-border bg-surface-2 px-3.5 transition-[border-color,box-shadow] focus-within:border-accent focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--accent)_22%,transparent)]">
         <Icon name="search" size={18} className="text-muted" />
         <input
           value={search}
@@ -329,7 +329,7 @@ export function EmployeeUsers() {
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                 disabled={page >= totalPages}
                 className="grid h-9 w-9 place-items-center rounded-full border border-border hover:text-text disabled:opacity-40"
-                aria-label="Вперёд"
+                aria-label="Вперед"
               >
                 <Icon name="arrowRight" size={16} />
               </button>

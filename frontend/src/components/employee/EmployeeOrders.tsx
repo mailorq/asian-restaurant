@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { formatUaPhone } from "../../lib/phone";
 import { Icon } from "../Icon";
 import { useToast } from "../../stores/toast";
 import { ORDER_STATUS, formatOrderDate, type OrderStatus } from "../../api/orders";
@@ -95,13 +96,13 @@ export function EmployeeOrders() {
                 <button
                   onClick={() => resumeCommand.mutate(intent.key, { onSuccess: told, onError: failed })}
                   disabled={pending}
-                  className="rounded-full bg-primary px-3.5 py-1.5 font-medium text-primary-contrast hover:bg-primary-hover disabled:opacity-50"
+                  className="btn btn-primary h-9 min-h-9 px-4 text-sm"
                 >
                   {intent.commandId ? "Обновить" : "Продолжить"}
                 </button>
                 <button
                   onClick={() => dismissCommand(intent.key)}
-                  className="rounded-full border border-border px-3.5 py-1.5 font-medium text-muted hover:text-text"
+                  className="btn btn-secondary h-9 min-h-9 px-4 text-sm text-muted"
                 >
                   Скрыть
                 </button>
@@ -163,13 +164,13 @@ export function EmployeeOrders() {
                     <Icon name="clock" size={12} /> {formatOrderDate(order.created_at)}
                   </span>
                   <span>{order.contact_name}</span>
-                  <span className="tnum">{order.phone}</span>
+                  <span className="tnum">{formatUaPhone(order.phone)}</span>
                   <span className="flex items-center gap-1">
                     <Icon name="pin" size={12} /> {order.address}
                   </span>
                   {!order.address_verified && (
                     <span className="font-medium text-amber-600 dark:text-amber-400">
-                      адрес не подтверждён — проверить
+                      адрес не подтвержден, проверьте
                     </span>
                   )}
                 </div>
@@ -220,7 +221,7 @@ export function EmployeeOrders() {
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               disabled={page >= totalPages}
               className="grid h-9 w-9 place-items-center rounded-full border border-border hover:text-text disabled:opacity-40"
-              aria-label="Вперёд"
+              aria-label="Вперед"
             >
               <Icon name="arrowRight" size={16} />
             </button>
