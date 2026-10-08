@@ -1,14 +1,16 @@
 import { ProductCard } from "../components/ProductCard";
-import { Icon, CATEGORY_ICON } from "../components/Icon";
+import { ProductThumb } from "../components/ProductThumb";
+import { Chopsticks } from "../components/Chopsticks";
+import { Icon } from "../components/Icon";
 import { useUI } from "../stores/ui";
 import { useProducts } from "../api/menu";
 import { CATEGORY_LABELS, type Category } from "../lib/menu";
 import { plural } from "../lib/format";
 
-const PERKS = [
-  { icon: "star", title: "Свежие продукты", text: "Готовим из сезонных ингредиентов каждый день." },
-  { icon: "clock", title: "Доставка 60 минут", text: "Привезём горячим по всему городу." },
-  { icon: "cart", title: "Удобная оплата", text: "Картой онлайн или наличными курьеру." },
+const FACTS = [
+  { icon: "star", text: "Свежие продукты каждый день" },
+  { icon: "clock", text: "Горячим за 60 минут" },
+  { icon: "cart", text: "Картой или наличными" },
 ];
 
 const CATEGORIES: Category[] = ["dish", "drink", "dessert"];
@@ -18,105 +20,107 @@ export function HomePage() {
   const { data } = useProducts();
   const products = data ?? [];
   const featured = products.filter((p) => p.is_featured);
+  // the plate holds the first featured dish; a drink or a dessert reads worse from above
+  const signature = featured.find((p) => p.category === "dish" && p.image) ?? featured.find((p) => p.image);
 
   return (
     <div>
-      <section className="relative overflow-hidden border-b border-border">
-        <div className="mx-auto max-w-6xl px-4 py-20 text-center sm:px-6 sm:py-28">
-          <p className="anim-fade-up mb-5 inline-flex items-center gap-2 rounded-full border border-border bg-surface px-4 py-1.5 text-xs font-medium uppercase tracking-widest text-muted">
-            <span className="h-1.5 w-1.5 rounded-full bg-accent" /> Азиатская кухня · доставка
-          </p>
-          <h1
-            className="anim-fade-up mx-auto max-w-3xl text-balance text-5xl font-bold leading-[1.05] sm:text-7xl"
-            style={{ animationDelay: "60ms" }}
-          >
-            Вкус Азии <span className="text-accent">у вас дома</span>
-          </h1>
-          <p
-            className="anim-fade-up mx-auto mt-6 max-w-xl text-lg text-muted"
-            style={{ animationDelay: "120ms" }}
-          >
-            Рамен, суши, вок и десерты от шефа. Собрали лучшее из Японии, Кореи, Таиланда и Китая —
-            в одном меню.
-          </p>
-          <div
-            className="anim-fade-up mt-9 flex flex-wrap items-center justify-center gap-3"
-            style={{ animationDelay: "180ms" }}
-          >
-            <button
-              onClick={() => navigate({ name: "menu" })}
-              className="inline-flex items-center gap-2 rounded-full bg-primary px-7 py-3.5 font-medium text-primary-contrast transition-[background-color,transform] duration-200 hover:bg-primary-hover active:scale-[0.98]"
-            >
-              Смотреть меню <Icon name="arrowRight" size={18} strokeWidth={2} />
-            </button>
-            <a
-              href="#popular"
-              className="rounded-full border border-border px-7 py-3.5 font-medium transition-colors hover:border-accent hover:text-accent"
-            >
-              Популярное
-            </a>
+      {/* the chopsticks lean past the plate; clipped here so a phone never scrolls sideways */}
+      <section className="overflow-x-clip border-b border-border">
+        <div className="mx-auto grid max-w-6xl items-center gap-12 px-4 pb-14 pt-10 sm:px-6 lg:grid-cols-[1.05fr_1fr] lg:gap-16 lg:py-20">
+          <div className="anim-hero order-2 lg:order-1">
+            <h1 className="max-w-xl text-balance text-[2.75rem] font-bold leading-[1.02] tracking-tight sm:text-6xl lg:text-7xl">
+              Вкус Азии у вас дома
+            </h1>
+            <p className="mt-6 max-w-md text-lg leading-relaxed text-muted">
+              Рамен, суши, вок и десерты от шефа. Собрали лучшее из Японии, Кореи, Таиланда и Китая в одном меню.
+            </p>
+            <div className="mt-9 flex flex-wrap items-center gap-3">
+              <button onClick={() => navigate({ name: "menu" })} className="btn btn-primary h-12 px-7 text-base">
+                Смотреть меню
+              </button>
+              <a href="#popular" className="btn btn-ghost h-12 px-5 text-base">
+                Популярное
+              </a>
+            </div>
+            <ul className="mt-12 flex flex-col gap-3 border-t border-border pt-6 text-sm text-muted">
+              {FACTS.map((fact) => (
+                <li key={fact.text} className="flex items-center gap-2.5 whitespace-nowrap">
+                  <Icon name={fact.icon} size={17} className="shrink-0 text-accent" />
+                  <span>{fact.text}</span>
+                </li>
+              ))}
+            </ul>
           </div>
-        </div>
-      </section>
 
-      <section className="mx-auto max-w-6xl px-4 py-12 sm:px-6">
-        <div className="grid gap-6 sm:grid-cols-3">
-          {PERKS.map((p) => (
-            <div key={p.title} className="flex gap-4">
-              <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-surface-2 text-accent">
-                <Icon name={p.icon} size={20} />
-              </span>
-              <div>
-                <p className="font-semibold">{p.title}</p>
-                <p className="mt-0.5 text-sm text-muted">{p.text}</p>
+          <div className="relative order-1 mx-auto w-full max-w-[22rem] sm:max-w-md lg:order-2 lg:max-w-none">
+            {/* the plate: the photo cropped round, a hairline rim around it */}
+            <div className="relative aspect-square rounded-full border border-accent/30 p-3 sm:p-4">
+              <div className="anim-scale-in h-full w-full overflow-hidden rounded-full shadow-lg">
+                {signature ? (
+                  <ProductThumb
+                    category={signature.category}
+                    name={signature.name}
+                    image={signature.image}
+                    priority
+                    className="h-full w-full"
+                    imageClassName="scale-[1.18]"
+                  />
+                ) : (
+                  <div className="h-full w-full bg-surface-2" />
+                )}
               </div>
             </div>
-          ))}
+            <Chopsticks className="anim-chopsticks pointer-events-none absolute bottom-[6%] right-[-4%] w-[62%] origin-[85%_50%] -rotate-[32deg]" />
+          </div>
         </div>
       </section>
 
-      <section id="popular" className="mx-auto max-w-6xl scroll-mt-20 px-4 py-8 sm:px-6">
-        <div className="mb-8 flex items-end justify-between">
-          <div>
-            <p className="text-sm font-medium uppercase tracking-widest text-accent">Хиты меню</p>
-            <h2 className="mt-1 text-3xl font-bold sm:text-4xl">Популярное</h2>
-          </div>
+      <section id="popular" className="mx-auto max-w-6xl scroll-mt-20 px-4 py-16 sm:px-6 sm:py-20">
+        <div className="mb-10 flex items-end justify-between gap-6">
+          <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">Популярное</h2>
           <button
             onClick={() => navigate({ name: "menu" })}
-            className="hidden items-center gap-1.5 text-sm font-medium text-muted transition-colors hover:text-text sm:flex"
+            className="text-sm font-medium text-muted underline-offset-4 transition-colors hover:text-text hover:underline"
           >
-            Всё меню <Icon name="arrowRight" size={16} />
+            Открыть меню
           </button>
         </div>
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {featured.map((product, i) => (
-            <ProductCard key={product.id} product={product} index={i} />
+        <div className="grid grid-cols-1 gap-x-6 gap-y-12 sm:grid-cols-2 lg:grid-cols-3">
+          {featured.map((product) => (
+            <ProductCard key={product.id} product={product} />
           ))}
         </div>
       </section>
 
-      <section className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
+      <section className="mx-auto max-w-6xl px-4 pb-8 sm:px-6">
+        <h2 className="mb-8 text-3xl font-bold tracking-tight sm:text-4xl">Разделы меню</h2>
         <div className="grid gap-4 sm:grid-cols-3">
-          {CATEGORIES.map((cat) => {
-            const count = products.filter((p) => p.category === cat).length;
+          {CATEGORIES.map((category) => {
+            const inCategory = products.filter((p) => p.category === category);
+            const cover = inCategory.find((p) => p.image);
             return (
               <button
-                key={cat}
+                key={category}
                 onClick={() => navigate({ name: "menu" })}
-                className="group relative flex h-44 flex-col justify-end overflow-hidden rounded-2xl border border-border bg-surface p-6 text-left transition-[transform,border-color,box-shadow] duration-300 hover:-translate-y-1 hover:border-accent/40 hover:shadow-lg"
+                className="group relative aspect-[16/11] overflow-hidden rounded-2xl text-left shadow-sm"
               >
-                <Icon
-                  name={CATEGORY_ICON[cat]}
-                  size={132}
-                  strokeWidth={0.9}
-                  className="pointer-events-none absolute -right-5 -top-4 text-accent/15 transition-transform duration-500 group-hover:-rotate-6 group-hover:scale-110"
-                />
-                <p className="relative font-display text-2xl font-bold">{CATEGORY_LABELS[cat]}</p>
-                <p className="relative mt-0.5 text-sm text-muted">
-                  {count} {plural(count, ["позиция", "позиции", "позиций"])}
-                </p>
-                <span className="relative mt-3 inline-flex items-center gap-1 text-sm font-medium text-accent">
-                  Смотреть меню <Icon name="arrowRight" size={15} />
+                {cover && (
+                  <ProductThumb
+                    category={category}
+                    name={cover.name}
+                    image={cover.image}
+                    className="absolute inset-0 h-full w-full"
+                    imageClassName="transition-transform duration-[var(--dur-slow)] ease-[var(--ease-out)] group-hover:scale-[1.04]"
+                  />
+                )}
+                {/* the label sits on a dark scrim in both themes, so it stays legible over any photo */}
+                <span className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/20 to-transparent" />
+                <span className="absolute inset-x-0 bottom-0 flex items-end justify-between gap-3 p-5 text-white">
+                  <span className="font-display text-2xl font-semibold">{CATEGORY_LABELS[category]}</span>
+                  <span className="tnum text-sm text-white/75">
+                    {inCategory.length} {plural(inCategory.length, ["позиция", "позиции", "позиций"])}
+                  </span>
                 </span>
               </button>
             );

@@ -1,75 +1,74 @@
+import { useEffect, useState } from "react";
 import { ProductThumb } from "./ProductThumb";
 import { Icon } from "./Icon";
 import { useAddItem } from "../api/cart";
-import { useToast } from "../stores/toast";
 import { useUI } from "../stores/ui";
-import { CATEGORY_LABEL_ONE, formatPrice, type Product } from "../lib/menu";
+import { formatPrice, type Product } from "../lib/menu";
 
-export function ProductCard({ product, index = 0 }: { product: Product; index?: number }) {
+export function ProductCard({ product }: { product: Product }) {
   const addItem = useAddItem();
-  const notify = useToast((s) => s.notify);
   const navigate = useUI((s) => s.navigate);
+  const [added, setAdded] = useState(false);
 
-  function open() {
-    navigate({ name: "product", id: product.id });
-  }
+  useEffect(() => {
+    if (!added) return;
+    const timer = setTimeout(() => setAdded(false), 1400);
+    return () => clearTimeout(timer);
+  }, [added]);
 
-  function addToCart(e: React.MouseEvent) {
-    e.stopPropagation();
+  function addToCart() {
     if (!product.available || addItem.isPending) return;
-    addItem.mutate(
-      { productId: product.id },
-      { onSuccess: () => notify(`${product.name} — добавлено в корзину`) },
-    );
+    addItem.mutate({ productId: product.id }, { onSuccess: () => setAdded(true) });
   }
 
   return (
-    <article
-      onClick={open}
-      className="group anim-fade-up flex cursor-pointer flex-col overflow-hidden rounded-2xl border border-border bg-surface transition-[transform,box-shadow] duration-300 hover:-translate-y-1 hover:shadow-[0_18px_40px_-24px_rgba(0,0,0,0.45)]"
-      style={{ animationDelay: `${Math.min(index, 8) * 45}ms` }}
-    >
-      <div className="relative overflow-hidden">
+    <article className="group relative flex flex-col">
+      <div className="relative overflow-hidden rounded-2xl shadow-sm ring-1 ring-border transition-[box-shadow] duration-300 group-hover:shadow-md group-hover:ring-accent/45">
         <ProductThumb
           category={product.category}
           name={product.name}
           image={product.image}
-          className={`aspect-[4/3] transition-transform duration-500 group-hover:scale-[1.04] ${
-            product.available ? "" : "opacity-60"
-          }`}
+          className={`aspect-[4/3] ${product.available ? "" : "opacity-55 grayscale-[35%]"}`}
+          imageClassName="transition-transform duration-[var(--dur-slow)] ease-[var(--ease-out)] group-hover:scale-[1.04]"
         />
-        <span className="absolute left-3 top-3 rounded-full bg-surface/85 px-3 py-1 text-xs font-medium text-muted backdrop-blur-sm">
-          {CATEGORY_LABEL_ONE[product.category]}
-        </span>
         {!product.available && (
-          <span className="absolute right-3 top-3 rounded-full bg-danger/90 px-3 py-1 text-xs font-medium text-white">
+          <span className="absolute left-3 top-3 rounded-full bg-bg/90 px-3 py-1 text-xs font-medium text-muted">
             Нет в наличии
           </span>
         )}
       </div>
 
-      <div className="flex flex-1 flex-col p-5">
-        <h3 className="text-lg font-semibold leading-snug">{product.name}</h3>
-        <p className="mt-1.5 line-clamp-2 text-sm text-muted">{product.description}</p>
+      <div className="mt-4 flex items-baseline justify-between gap-4">
+        <h3 className="font-display text-xl font-semibold leading-snug">
+          {/* the title opens the dish; its hit area covers the whole card, under the cart button */}
+          <button
+            onClick={() => navigate({ name: "product", id: product.id })}
+            className="text-left after:absolute after:inset-0 after:rounded-2xl focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-offset-4 focus-visible:after:outline-accent"
+          >
+            {product.name}
+          </button>
+        </h3>
+        <span className="tnum shrink-0 text-lg font-semibold">{formatPrice(product.price)}</span>
+      </div>
+      <p className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-muted">{product.description}</p>
 
-        <div className="mt-4 flex items-center justify-between pt-1">
-          <span className="tnum text-lg font-semibold">{formatPrice(product.price)}</span>
-          {product.available ? (
-            <button
-              onClick={addToCart}
-              disabled={addItem.isPending}
-              aria-label={`Добавить «${product.name}» в корзину`}
-              className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-contrast transition-[background-color,transform] duration-200 hover:bg-primary-hover active:scale-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:opacity-60"
-            >
-              <Icon name="plus" size={16} strokeWidth={2} />
-              В корзину
-            </button>
-          ) : (
-            <span className="rounded-full bg-surface-2 px-3.5 py-2 text-sm font-medium text-muted">
-              Нет в наличии
-            </span>
-          )}
-        </div>
+      <div className="relative z-10 mt-4">
+        {product.available ? (
+          <button
+            onClick={addToCart}
+            disabled={addItem.isPending}
+            aria-label={`Добавить «${product.name}» в корзину`}
+            className={`btn h-10 min-h-10 px-4 text-sm ${added ? "btn-primary" : "btn-secondary"}`}
+          >
+            <Icon name={added ? "check" : "plus"} size={16} strokeWidth={2.2} />
+            {added ? "Добавлено" : "В корзину"}
+          </button>
+        ) : (
+          <span className="inline-flex h-10 items-center text-sm text-muted">Скоро вернется в меню</span>
+        )}
+        <span className="sr-only" aria-live="polite">
+          {added ? `«${product.name}» в корзине` : ""}
+        </span>
       </div>
     </article>
   );
