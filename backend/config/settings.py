@@ -42,6 +42,7 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware",
     "config.middleware.ApiWriteGuard",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "config.middleware.AccountGuard",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "django_prometheus.middleware.PrometheusAfterMiddleware",
