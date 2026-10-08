@@ -8,15 +8,21 @@ export function ProductThumb({
   name,
   image,
   className = "",
+  imageClassName = "",
   iconSize = 64,
+  priority = false,
 }: {
   category: Category;
   name: string;
   image?: string | null;
   className?: string;
+  imageClassName?: string;
   iconSize?: number;
+  // the photo of the first screen: fetched at once instead of when it scrolls into view
+  priority?: boolean;
 }) {
   const [failed, setFailed] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const showImage = Boolean(image) && !failed;
 
   return (
@@ -25,12 +31,19 @@ export function ProductThumb({
     >
       {showImage ? (
         <img
+          // a cached photo may have loaded before react attached the handler
+          ref={(img) => {
+            if (img?.complete && img.naturalWidth > 0) setLoaded(true);
+          }}
           src={image ?? undefined}
           alt={name}
-          loading="lazy"
+          loading={priority ? "eager" : "lazy"}
+          fetchPriority={priority ? "high" : "auto"}
           decoding="async"
+          onLoad={() => setLoaded(true)}
           onError={() => setFailed(true)}
-          className="h-full w-full object-cover"
+          data-loaded={loaded || undefined}
+          className={`reveal h-full w-full object-cover ${imageClassName}`}
         />
       ) : (
         <>

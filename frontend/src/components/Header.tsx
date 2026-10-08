@@ -39,12 +39,15 @@ export function Header() {
               <button
                 key={item.label}
                 onClick={() => navigate(item.view)}
-                className={`rounded-full px-3.5 py-2 text-sm font-medium transition-colors ${
+                aria-current={active ? "page" : undefined}
+                className={`relative rounded-full px-3.5 py-2 text-sm font-medium transition-colors ${
                   active ? "text-text" : "text-muted hover:text-text"
                 }`}
               >
                 {item.label}
-                {active && <span className="mx-auto mt-0.5 block h-0.5 w-4 rounded-full bg-accent" />}
+                {active && (
+                  <span className="absolute inset-x-0 -bottom-0.5 mx-auto h-0.5 w-4 rounded-full bg-accent" />
+                )}
               </button>
             );
           })}
@@ -54,12 +57,12 @@ export function Header() {
           <SearchBox />
         </div>
 
-        <div className="ml-auto flex items-center gap-1 lg:ml-2">
+        <div className="ml-auto flex items-center gap-0.5 lg:ml-3">
           <ThemeToggle />
           {user?.is_employee && (
             <button
               onClick={() => navigate({ name: "employee" })}
-              className="hidden items-center gap-1.5 rounded-full border border-border px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:border-accent hover:text-accent sm:flex"
+              className="btn btn-secondary mx-1 hidden h-10 min-h-10 px-3.5 text-sm text-muted sm:inline-flex"
             >
               <Icon name="bowl" size={16} /> Панель
             </button>
@@ -67,18 +70,18 @@ export function Header() {
           <button
             onClick={() => navigate({ name: "orders" })}
             aria-label="Мои заказы"
-            className="hidden h-10 w-10 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-text sm:grid"
+            className="icon-btn hidden sm:inline-grid"
           >
             <Icon name="clock" size={20} />
           </button>
-          <button
-            onClick={() => openModal("cart")}
-            aria-label="Корзина"
-            className="relative grid h-10 w-10 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-text"
-          >
+          <button onClick={() => openModal("cart")} aria-label="Корзина" className="icon-btn relative">
             <Icon name="cart" size={20} />
             {count > 0 && (
-              <span className="tnum absolute -right-0.5 -top-0.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[11px] font-bold text-accent-contrast">
+              // keyed by the count, so it answers every change with a short pop
+              <span
+                key={count}
+                className="anim-scale-in tnum absolute right-0.5 top-0.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[11px] font-bold text-accent-contrast"
+              >
                 {count}
               </span>
             )}
@@ -88,7 +91,7 @@ export function Header() {
           ) : (
             <button
               onClick={() => openModal("auth", "login")}
-              className="ml-1 hidden rounded-full border border-border px-4 py-2 text-sm font-medium transition-colors hover:border-accent hover:text-accent sm:block"
+              className="btn btn-secondary ml-1.5 hidden h-10 min-h-10 px-4 text-sm sm:inline-flex"
             >
               Войти
             </button>
@@ -96,7 +99,8 @@ export function Header() {
           <button
             onClick={() => setMobileOpen((v) => !v)}
             aria-label="Меню"
-            className="grid h-10 w-10 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-text md:hidden"
+            aria-expanded={mobileOpen}
+            className="icon-btn md:hidden"
           >
             <Icon name={mobileOpen ? "close" : "menu"} size={22} />
           </button>
@@ -104,32 +108,40 @@ export function Header() {
       </div>
 
       {mobileOpen && (
-        <div className="anim-fade-in border-t border-border bg-bg px-4 py-3 md:hidden">
+        <div className="anim-fade-in border-t border-border bg-bg px-4 pb-4 pt-3 shadow-md md:hidden">
           <div className="mb-3 lg:hidden">
             <SearchBox />
           </div>
           <div className="flex flex-col">
-            {NAV.map((item) => (
+            {[
+              ...NAV,
+              { label: "Мои заказы", view: { name: "orders" } as View },
+              ...(user?.is_employee ? [{ label: "Панель сотрудника", view: { name: "employee" } as View }] : []),
+            ].map((item) => (
               <button
                 key={item.label}
                 onClick={() => {
                   navigate(item.view);
                   setMobileOpen(false);
                 }}
-                className="rounded-lg px-3 py-2.5 text-left text-sm font-medium text-muted hover:bg-surface-2 hover:text-text"
+                aria-current={item.view.name === view.name ? "page" : undefined}
+                className={`flex h-12 items-center rounded-xl px-3 text-left text-base font-medium hover:bg-surface-2 ${
+                  item.view.name === view.name ? "text-text" : "text-muted"
+                }`}
               >
                 {item.label}
               </button>
             ))}
+            <div className="my-2 h-px bg-border" />
             {user ? (
               <button
                 onClick={() => {
                   logout();
                   setMobileOpen(false);
                 }}
-                className="mt-1 rounded-lg px-3 py-2.5 text-left text-sm font-medium text-danger hover:bg-surface-2"
+                className="flex h-12 items-center gap-2.5 rounded-xl px-3 text-left text-base font-medium text-danger hover:bg-danger/10"
               >
-                Выйти ({user.name || formatUaPhone(user.phone ?? "")})
+                <Icon name="logout" size={18} /> Выйти ({user.name || formatUaPhone(user.phone ?? "")})
               </button>
             ) : (
               <button
@@ -137,7 +149,7 @@ export function Header() {
                   openModal("auth", "login");
                   setMobileOpen(false);
                 }}
-                className="mt-1 rounded-lg px-3 py-2.5 text-left text-sm font-medium text-accent hover:bg-surface-2"
+                className="btn btn-primary mt-1 h-12"
               >
                 Войти в аккаунт
               </button>

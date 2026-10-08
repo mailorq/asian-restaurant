@@ -37,7 +37,7 @@ export function UserMenu() {
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="flex items-center gap-2 rounded-full border border-border px-3.5 py-2 text-sm font-medium text-muted transition-colors hover:text-text"
+        className="btn btn-secondary h-10 min-h-10 gap-2 px-3.5 text-sm text-muted hover:text-text"
       >
         <Icon name="user" size={16} />
         <span className="max-w-[130px] truncate">{label}</span>
@@ -53,7 +53,7 @@ export function UserMenu() {
         <div className="absolute right-0 top-full z-50 pt-2">
           <div
             role="menu"
-            className="anim-fade-up w-48 overflow-hidden rounded-xl border border-border bg-surface p-1 shadow-lg"
+            className="anim-fade-up w-56 overflow-hidden rounded-2xl border border-border bg-surface p-1.5 shadow-lg"
           >
             <div className="px-3 py-2">
               <p className="truncate text-sm font-medium">{label}</p>
