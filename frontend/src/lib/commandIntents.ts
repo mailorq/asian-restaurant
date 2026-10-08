@@ -50,10 +50,16 @@ export class OutcomeUnknown extends Error {
   }
 }
 
-// no answer, operations not reached, or the reply lost: the command may or may not exist
+// no answer, operations not reached, the reply lost, or a request refused because the browser is signed in
+// as someone else by now: the command may or may not exist, and the action stays with the one who started it
 function outcomeOpen(e: unknown): boolean {
-  const status = (e as { status?: number }).status;
-  return status === 0 || status === 503 || status === 504;
+  const failure = e as { status?: number; body?: { code?: string } | null };
+  return (
+    failure.status === 0 ||
+    failure.status === 503 ||
+    failure.status === 504 ||
+    failure.body?.code === "account_changed"
+  );
 }
 
 export function modeChanged(e: unknown): boolean {

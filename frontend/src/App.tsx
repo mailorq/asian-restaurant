@@ -16,6 +16,9 @@ export default function App() {
   const view = useUI((s) => s.view);
   const modal = useUI((s) => s.modal);
   const viewKey = view.name === "product" ? `product-${view.id}` : view.name;
+  // forms that belong to a person (checkout with its address, the staff screens) start over for another
+  // account instead of carrying the previous one's input into it
+  const account = useAuth((s) => (s.ready ? String(s.user?.id ?? "guest") : "unknown"));
 
   // restore session on load
   useEffect(() => {
@@ -26,7 +29,7 @@ export default function App() {
   if (view.name === "employee") {
     return (
       <>
-        <EmployeePage />
+        <EmployeePage key={account} />
         {modal === "auth" && <AuthModal />}
         <ToastHost />
       </>
@@ -45,7 +48,7 @@ export default function App() {
       <Footer />
 
       {modal === "auth" && <AuthModal />}
-      {modal === "cart" && <CartModal />}
+      {modal === "cart" && <CartModal key={account} />}
       <ToastHost />
     </div>
   );

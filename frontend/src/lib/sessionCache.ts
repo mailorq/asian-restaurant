@@ -8,24 +8,27 @@ import {
   type UseMutationResult,
 } from "@tanstack/react-query";
 
-import { currentSession, endSession } from "./session";
+import { currentSession, endSession, setAccount } from "./session";
 
 // every cached query belongs to the signed-in account: its orders, its last used address, its cart,
 // the screens a staff member sees. when the identity changes - login, logout, register, a password
-// reset, a refresh that sees a different account - the whole cache is dropped and its in-flight
-// fetches are detached, so the next account never reads the previous one's data and a slow answer to
-// the previous account's request cannot land in the new cache. a re-validation of the same account
-// keeps its warm cache
+// reset, a refresh that sees a different account, another tab signing in - the whole cache is dropped
+// and its in-flight fetches are detached, so the next account never reads the previous one's data and a
+// slow answer to the previous account's request cannot land in the new cache. learning who is signed in
+// (undefined is not known yet) changes nothing: no account was shown or sent for before it
 export function onIdentityChange(
   qc: QueryClient,
-  previousId: number | null,
-  nextId: number | null,
+  previousId: number | null | undefined,
+  nextId: number | null | undefined,
 ): void {
   if (previousId === nextId) {
     return;
   }
-  endSession();
-  qc.clear();
+  if (previousId !== undefined) {
+    endSession();
+    qc.clear();
+  }
+  setAccount(nextId);
 }
 
 // clearing the cache does not stop a mutation already on its way: its answer still arrives and its
