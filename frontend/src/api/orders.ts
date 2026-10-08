@@ -35,14 +35,14 @@ export interface Order {
 
 export const ORDER_STATUS: Record<OrderStatus, { label: string; cls: string }> = {
   created: { label: "Создан", cls: "bg-accent/15 text-accent" },
-  confirmed: { label: "Подтверждён", cls: "bg-accent/15 text-accent" },
+  confirmed: { label: "Подтвержден", cls: "bg-accent/15 text-accent" },
   preparing: { label: "Готовится", cls: "bg-accent/15 text-accent" },
   delivering: { label: "В доставке", cls: "bg-sky-500/15 text-sky-600 dark:text-sky-400" },
   delivered: {
     label: "Доставлен",
     cls: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
   },
-  cancelled: { label: "Отменён", cls: "bg-danger/15 text-danger" },
+  cancelled: { label: "Отменен", cls: "bg-danger/15 text-danger" },
 };
 
 const dateFmt = new Intl.DateTimeFormat("ru-RU", {

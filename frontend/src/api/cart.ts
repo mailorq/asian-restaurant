@@ -69,8 +69,8 @@ function surface(cart: Cart, notify: Notify): void {
   for (const r of cart.removed_items) {
     notify(
       r.reason === "out_of_stock"
-        ? `«${r.name}» закончился и удалён из корзины`
-        : `«${r.name}» больше недоступен и удалён из корзины`,
+        ? `«${r.name}» закончился и удален из корзины`
+        : `«${r.name}» больше недоступен и удален из корзины`,
       "error",
     );
   }
@@ -78,7 +78,7 @@ function surface(cart: Cart, notify: Notify): void {
 
 // Send the write with the last-seen version. Only a relative add may auto-retry
 // once against the fresh version; absolute set/remove/clear must not, since a
-// stale overwrite could clobber a change from another tab — instead we surface
+// stale overwrite could clobber a change from another tab; instead we surface
 // the fresh cart (CartConflictError) and let the user repeat the action.
 async function writeWithVersion(
   qc: QueryClient,
@@ -124,7 +124,7 @@ export function cartMutation<V>(
     onError: (e) => {
       if (e instanceof CartConflictError) {
         qc.setQueryData(CART_KEY, e.cart);
-        notify("Корзина изменилась — проверьте её и повторите действие", "error");
+        notify("Корзина изменилась, проверьте ее и повторите действие", "error");
       } else {
         notify(e instanceof Error ? e.message : "Не удалось обновить корзину", "error");
       }

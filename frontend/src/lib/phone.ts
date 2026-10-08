@@ -1,5 +1,5 @@
 // client-side helpers for ukrainian +380 numbers (covers ~99% of inputs).
-// the backend re-validates every number with phonenumbers — this is UX only.
+// the backend re-validates every number with phonenumbers, this is ux only.
 
 export function formatUaPhone(raw: string): string {
   let d = raw.replace(/\D/g, "");
