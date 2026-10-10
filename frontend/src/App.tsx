@@ -3,6 +3,7 @@ import { Footer } from "./components/Footer";
 import { AuthModal } from "./components/AuthModal";
 import { CartModal } from "./components/CartModal";
 import { ToastHost } from "./components/ToastHost";
+import { AuthCheckNotice } from "./components/AuthCheckNotice";
 import { useEffect } from "react";
 import { HomePage } from "./pages/HomePage";
 import { MenuPage } from "./pages/MenuPage";
@@ -31,6 +32,7 @@ export default function App() {
       <>
         <EmployeePage key={account} />
         {modal === "auth" && <AuthModal />}
+        <AuthCheckNotice />
         <ToastHost />
       </>
     );
@@ -49,6 +51,7 @@ export default function App() {
 
       {modal === "auth" && <AuthModal />}
       {modal === "cart" && <CartModal key={account} />}
+      <AuthCheckNotice />
       <ToastHost />
     </div>
   );

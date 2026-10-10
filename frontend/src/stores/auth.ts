@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 import { ApiError, api, isAccountChanged } from "../api/client";
 import { queryClient } from "../lib/queryClient";
-import { currentAccount, onAccountChanged } from "../lib/session";
+import { accountUnresolved, askingAccount, currentAccount, onAccountChanged, onAccountWanted } from "../lib/session";
 import { onIdentityChange } from "../lib/sessionCache";
 import { useToast } from "./toast";
 
@@ -19,6 +19,8 @@ export interface CurrentUser {
 interface AuthState {
   user: CurrentUser | null;
   ready: boolean;
+  // the tab could not find out who is signed in; it is not a guest and asks again
+  failed: boolean;
   setUser: (user: CurrentUser | null) => void;
   refresh: () => Promise<void>;
   logout: () => Promise<void>;
@@ -30,29 +32,38 @@ const SWITCHED = "Аккаунт сменился в другой вкладке
 // speeds them up, the server refuses whatever they send for an account the browser no longer has
 const tabs = typeof window !== "undefined" && "BroadcastChannel" in window ? new BroadcastChannel("auth") : null;
 
-export const useAuth = create<AuthState>((set) => {
+export const useAuth = create<AuthState>((set, get) => {
   // counts every identity this tab applies: an answer to /auth/me counts only if none came after it was asked
   let applied = 0;
 
   function apply(user: CurrentUser | null): void {
     const previous = currentAccount();
     const next = user?.id ?? null;
+    const recovered = get().failed;
     onIdentityChange(queryClient, previous, next);
     if (previous !== undefined && previous !== next) useToast.getState().clear();
     applied += 1;
-    set({ user, ready: true });
+    set({ user, ready: true, failed: false });
+    // what was refused while the account was unknown is asked again now that it is known
+    if (recovered) void queryClient.invalidateQueries({ predicate: (query) => query.state.status === "error" });
   }
 
   async function refresh(): Promise<void> {
     const asked = applied;
+    askingAccount();
     try {
       const user = await api<CurrentUser>("/auth/me");
       if (asked === applied) apply(user);
     } catch (e) {
       if (asked !== applied) return;
-      // only a refusal says nobody is signed in; a failed request leaves a known account as it was
-      const refused = e instanceof ApiError && (e.status === 401 || e.status === 403);
-      if (refused || currentAccount() === undefined) apply(null);
+      // only a refusal says nobody is signed in. a failed request leaves a known account as it was and an
+      // unknown one unknown: what waits for it is refused rather than sent as a guest's
+      if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+        apply(null);
+      } else if (currentAccount() === undefined) {
+        accountUnresolved(e);
+        set({ failed: true });
+      }
     }
   }
 
@@ -69,6 +80,12 @@ export const useAuth = create<AuthState>((set) => {
   }
 
   onAccountChanged(resync);
+  onAccountWanted(() => void refresh());
+  if (typeof window !== "undefined") {
+    window.addEventListener("online", () => {
+      if (get().failed) void refresh();
+    });
+  }
   if (tabs) {
     tabs.onmessage = async () => {
       const before = currentAccount();
@@ -80,6 +97,7 @@ export const useAuth = create<AuthState>((set) => {
   return {
     user: null,
     ready: false,
+    failed: false,
     setUser: (user) => {
       apply(user);
       tabs?.postMessage("identity");

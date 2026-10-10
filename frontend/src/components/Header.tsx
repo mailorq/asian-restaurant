@@ -19,6 +19,7 @@ export function Header() {
   const openModal = useUI((s) => s.openModal);
   const count = useCartQuery().data?.count ?? 0;
   const user = useAuth((s) => s.user);
+  const ready = useAuth((s) => s.ready);
   const logout = useAuth((s) => s.logout);
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -86,15 +87,18 @@ export function Header() {
               </span>
             )}
           </button>
+          {/* until the tab knows who is signed in it offers neither the account nor a sign in */}
           {user ? (
             <UserMenu />
           ) : (
-            <button
-              onClick={() => openModal("auth", "login")}
-              className="btn btn-secondary ml-1.5 hidden h-10 min-h-10 px-4 text-sm sm:inline-flex"
-            >
-              Войти
-            </button>
+            ready && (
+              <button
+                onClick={() => openModal("auth", "login")}
+                className="btn btn-secondary ml-1.5 hidden h-10 min-h-10 px-4 text-sm sm:inline-flex"
+              >
+                Войти
+              </button>
+            )
           )}
           <button
             onClick={() => setMobileOpen((v) => !v)}
@@ -144,15 +148,17 @@ export function Header() {
                 <Icon name="logout" size={18} /> Выйти ({user.name || formatUaPhone(user.phone ?? "")})
               </button>
             ) : (
-              <button
-                onClick={() => {
-                  openModal("auth", "login");
-                  setMobileOpen(false);
-                }}
-                className="btn btn-primary mt-1 h-12"
-              >
-                Войти в аккаунт
-              </button>
+              ready && (
+                <button
+                  onClick={() => {
+                    openModal("auth", "login");
+                    setMobileOpen(false);
+                  }}
+                  className="btn btn-primary mt-1 h-12"
+                >
+                  Войти в аккаунт
+                </button>
+              )
             )}
           </div>
         </div>

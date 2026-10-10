@@ -53,7 +53,15 @@ async function csrfToken(): Promise<string | null> {
 // for this tab and any other that shares its cookies
 export async function api<T>(path: string, init: RequestInit = {}, session = currentSession()): Promise<T> {
   const bound = !IDENTITY.has(path.split("?")[0]);
-  if (bound) await accountKnown();
+  if (bound) {
+    try {
+      await accountKnown();
+    } catch {
+      throw new ApiError("Не удалось проверить вход, действие не выполнено. Повторите позже", 0, {
+        code: "account_unknown",
+      });
+    }
+  }
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
   if (init.body) headers.set("Content-Type", "application/json");
@@ -80,7 +88,8 @@ export async function api<T>(path: string, init: RequestInit = {}, session = cur
   if (!resp.ok) {
     const detail = body?.detail;
     const error = new ApiError(typeof detail === "string" ? detail : `Ошибка ${resp.status}`, resp.status, body);
-    if (isAccountChanged(error)) accountChanged();
+    // a refusal of a request made for an account the tab has since left says nothing about the one it shows now
+    if (isAccountChanged(error) && session === currentSession()) accountChanged();
     throw error;
   }
   return body as T;

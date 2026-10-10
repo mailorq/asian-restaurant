@@ -9,6 +9,7 @@ export function OrdersPage() {
   const openModal = useUI((s) => s.openModal);
   const navigate = useUI((s) => s.navigate);
   const user = useAuth((s) => s.user);
+  const ready = useAuth((s) => s.ready);
   const [page, setPage] = useState(1);
   const { data, isLoading, isError, refetch } = useOrders(Boolean(user), page);
   const orders = data?.items;
@@ -20,7 +21,14 @@ export function OrdersPage() {
     <div className="mx-auto max-w-3xl px-4 py-10 sm:px-6 sm:py-14">
       <h1 className="mb-8 text-4xl font-bold tracking-tight sm:text-5xl">Мои заказы</h1>
 
-      {!user ? (
+      {/* an account not known yet is not a guest: no sign in is offered until the tab knows */}
+      {!ready ? (
+        <ul className="flex flex-col gap-4" aria-busy="true">
+          {[0, 1].map((i) => (
+            <li key={i} className="h-40 animate-pulse rounded-2xl bg-surface-2" />
+          ))}
+        </ul>
+      ) : !user ? (
         <div className="flex flex-col items-center rounded-3xl border border-border bg-surface px-6 py-14 text-center">
           <span className="mb-4 grid h-14 w-14 place-items-center rounded-full bg-surface-2 text-muted">
             <Icon name="user" size={26} />

@@ -145,6 +145,35 @@ test("a write refused because the browser has another account is not repeated an
   );
 });
 
+test("a refusal that comes back after the tab took the next account leaves that account and its data alone", async () => {
+  const late = held();
+  serve([
+    ["POST /api/cart/items", () => late.promise],
+    ["GET /api/auth/me", () => json(200, B)],
+  ]);
+  signedIn = "A";
+  useAuth.getState().setUser(A);
+  const mutation = new MutationObserver(queryClient, sessionMutation(cartMutation(queryClient, () => {}, addItem)));
+  const stop = mutation.subscribe(() => {});
+  signedIn = "B"; // another tab signed in before the write left
+  mutation.mutate({ productId: 17 }).catch(() => {});
+  await settle();
+  await useAuth.getState().refresh(); // the tab finds out about B before the refusal arrives
+  const cartOfB = { ...CART, version: 4 };
+  queryClient.setQueryData(["cart"], cartOfB);
+
+  late.release(json(409, REFUSED));
+  await settle();
+  stop();
+  assert.deepEqual(requests("POST /api/cart/items"), [{ call: "POST /api/cart/items", as: "B", claimed: "101" }]);
+  assert.equal(useAuth.getState().user?.id, 202);
+  assert.equal(useAuth.getState().ready, true);
+  assert.equal(currentAccount(), 202);
+  assert.equal(queryClient.getQueryData(["cart"]), cartOfB);
+  assert.deepEqual(useToast.getState().toasts, []);
+  assert.equal(requests("GET /api/auth/me").length, 1, "the tab does not start over for an account it already shows");
+});
+
 test("logout from a tab whose account the browser no longer has neither ends that account nor shows a guest", async () => {
   serve([
     ["POST /api/auth/logout", () => json(409, REFUSED)],
