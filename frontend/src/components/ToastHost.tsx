@@ -1,10 +1,13 @@
+import { createPortal } from "react-dom";
 import { Icon } from "./Icon";
 import { useToast } from "../stores/toast";
 
 export function ToastHost() {
   const toasts = useToast((s) => s.toasts);
 
-  return (
+  // next to the dialogs, outside the app root: an open dialog makes the root inert, and its notices
+  // still have to be heard
+  return createPortal(
     <div className="pointer-events-none fixed inset-x-0 top-4 z-[200] flex flex-col items-center gap-2 px-4">
       {toasts.map((t) => (
         <div
@@ -23,6 +26,7 @@ export function ToastHost() {
           {t.message}
         </div>
       ))}
-    </div>
+    </div>,
+    document.body,
   );
 }

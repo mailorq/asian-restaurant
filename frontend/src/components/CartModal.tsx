@@ -106,20 +106,10 @@ export function CartModal() {
     );
   }
 
-  const title =
-    step === "cart" ? "Корзина" : (
-      <button
-        onClick={() => setStep("cart")}
-        aria-label="Назад к корзине"
-        className="-ml-1 flex items-center gap-2 rounded-lg transition-colors hover:text-accent"
-      >
-        <Icon name="arrowLeft" size={20} /> Оформление
-      </button>
-    );
-
   return (
     <Modal
-      title={title}
+      title={step === "cart" ? "Корзина" : "Оформление"}
+      back={step === "cart" ? undefined : { label: "Назад к корзине", onClick: () => setStep("cart") }}
       onClose={close}
       footer={
         empty || isLoading ? undefined : step === "cart" ? (
