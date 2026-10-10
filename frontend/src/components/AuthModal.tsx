@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Modal } from "./Modal";
 import { Icon } from "./Icon";
 import { useUI } from "../stores/ui";
@@ -36,6 +36,8 @@ const RESEND_SECONDS = 60;
 
 type Mode = "login" | "register" | "recover";
 
+const TABS = ["login", "register"] as const;
+
 export function AuthModal() {
   const tab = useUI((s) => s.authTab);
   const setTab = (t: "login" | "register") => useUI.setState({ authTab: t });
@@ -56,6 +58,8 @@ export function AuthModal() {
   const [loading, setLoading] = useState(false);
 
   const mode: Mode = tab === "register" ? "register" : recovering ? "recover" : "login";
+  const tabsId = useId();
+  const tabRefs = useRef<Partial<Record<(typeof TABS)[number], HTMLButtonElement | null>>>({});
 
   useEffect(() => {
     if (resendIn <= 0) return;
@@ -69,6 +73,25 @@ export function AuthModal() {
     setCodeSent(false);
     setCode("");
     setError(null);
+  }
+
+  // arrows, home and end move between the tabs and choose the one they land on
+  function moveTab(e: React.KeyboardEvent<HTMLDivElement>) {
+    const at = TABS.indexOf(tab);
+    const to =
+      e.key === "ArrowRight"
+        ? (at + 1) % TABS.length
+        : e.key === "ArrowLeft"
+          ? (at - 1 + TABS.length) % TABS.length
+          : e.key === "Home"
+            ? 0
+            : e.key === "End"
+              ? TABS.length - 1
+              : null;
+    if (to === null) return;
+    e.preventDefault();
+    switchTo(TABS[to]);
+    tabRefs.current[TABS[to]]?.focus();
   }
 
   async function run<T>(request: () => Promise<T>): Promise<T | undefined> {
@@ -136,7 +159,12 @@ export function AuthModal() {
 
   return (
     <Modal title={title} onClose={close}>
-      <div role="tablist" className="relative mb-6 grid grid-cols-2 rounded-full bg-surface-2 p-1">
+      <div
+        role="tablist"
+        aria-label="Вход или регистрация"
+        onKeyDown={moveTab}
+        className="relative mb-6 grid grid-cols-2 rounded-full bg-surface-2 p-1"
+      >
         {/* the thumb slides to the chosen tab, so the switch shows where it went */}
         <span
           aria-hidden
@@ -144,11 +172,17 @@ export function AuthModal() {
             tab === "register" ? "translate-x-full" : ""
           }`}
         />
-        {(["login", "register"] as const).map((t) => (
+        {TABS.map((t) => (
           <button
             key={t}
+            ref={(el) => {
+              tabRefs.current[t] = el;
+            }}
+            id={`${tabsId}-${t}`}
             role="tab"
             aria-selected={tab === t}
+            aria-controls={`${tabsId}-panel`}
+            tabIndex={tab === t ? 0 : -1}
             onClick={() => switchTo(t)}
             className={`relative h-10 rounded-full text-sm font-medium transition-colors ${
               tab === t ? "text-text" : "text-muted hover:text-text"
@@ -159,7 +193,13 @@ export function AuthModal() {
         ))}
       </div>
 
-      <div key={mode} className="anim-fade-up">
+      <div
+        key={mode}
+        id={`${tabsId}-panel`}
+        role="tabpanel"
+        aria-labelledby={`${tabsId}-${tab}`}
+        className="anim-fade-up"
+      >
         <form onSubmit={submit} className="flex flex-col gap-5">
           {mode === "register" && (
             <Field label="Имя" required>
