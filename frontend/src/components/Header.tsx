@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "./Icon";
 import { SearchBox } from "./SearchBox";
 import { ThemeToggle } from "./ThemeToggle";
@@ -22,6 +22,9 @@ export function Header() {
   const ready = useAuth((s) => s.ready);
   const logout = useAuth((s) => s.logout);
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // the menu belongs to the page it was opened on: a found dish, a link or the back button closes it
+  useEffect(() => setMobileOpen(false), [view]);
 
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-bg/85 backdrop-blur-md">
