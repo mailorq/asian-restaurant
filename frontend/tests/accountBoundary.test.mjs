@@ -189,6 +189,82 @@ test("logout from a tab whose account the browser no longer has neither ends tha
   assert.equal(useAuth.getState().user?.id, 202);
 });
 
+test("a logout held at its csrf request sends nothing once the tab shows the next account", async () => {
+  const csrf = held();
+  serve([
+    ["GET /api/auth/csrf", () => csrf.promise],
+    ["GET /api/auth/me", () => json(200, B)],
+    [
+      "POST /api/auth/logout",
+      () => {
+        signedIn = null;
+        return json(200, {});
+      },
+    ],
+  ]);
+  signedIn = "A";
+  useAuth.getState().setUser(A);
+  const loggingOut = useAuth.getState().logout();
+  await settle();
+  signedIn = "B"; // another tab signed in while the token was on its way
+  await useAuth.getState().refresh();
+
+  csrf.release(json(200, {}));
+  await loggingOut;
+  await settle();
+  assert.deepEqual(requests("POST /api/auth/logout"), []);
+  assert.equal(signedIn, "B");
+  assert.equal(useAuth.getState().user?.id, 202);
+  assert.equal(currentAccount(), 202);
+});
+
+for (const [outcome, answer] of [
+  ["failure", () => json(500, { detail: "Ошибка сервера" })],
+  ["success", () => json(200, {})],
+]) {
+  test(`a logout ${outcome} that comes back after the tab took the next account leaves that account shown`, async () => {
+    const answered = held();
+    serve([
+      ["POST /api/auth/logout", () => answered.promise],
+      ["GET /api/auth/me", () => json(200, B)],
+    ]);
+    signedIn = "A";
+    useAuth.getState().setUser(A);
+    const loggingOut = useAuth.getState().logout();
+    await settle();
+    signedIn = "B";
+    await useAuth.getState().refresh();
+
+    answered.release(answer());
+    await loggingOut;
+    await settle();
+    assert.deepEqual(requests("POST /api/auth/logout"), [{ call: "POST /api/auth/logout", as: "A", claimed: "101" }]);
+    assert.equal(useAuth.getState().user?.id, 202);
+    assert.equal(useAuth.getState().ready, true);
+    assert.equal(currentAccount(), 202);
+  });
+}
+
+test("an ordinary logout ends the account the tab shows and makes the tab a guest", async () => {
+  serve([
+    [
+      "POST /api/auth/logout",
+      () => {
+        signedIn = null;
+        return json(200, {});
+      },
+    ],
+  ]);
+  signedIn = "A";
+  useAuth.getState().setUser(A);
+  await useAuth.getState().logout();
+  assert.deepEqual(requests("POST /api/auth/logout"), [{ call: "POST /api/auth/logout", as: "A", claimed: "101" }]);
+  assert.equal(signedIn, null);
+  assert.equal(useAuth.getState().user, null);
+  assert.equal(useAuth.getState().ready, true);
+  assert.equal(currentAccount(), null);
+});
+
 test("a command refused because the browser has another account stays with the one who started it", async () => {
   const route = "POST /api/employee/orders/5/transition-commands";
   serve([

@@ -2,7 +2,14 @@ import { create } from "zustand";
 
 import { ApiError, api, isAccountChanged } from "../api/client";
 import { queryClient } from "../lib/queryClient";
-import { accountUnresolved, askingAccount, currentAccount, onAccountChanged, onAccountWanted } from "../lib/session";
+import {
+  accountUnresolved,
+  askingAccount,
+  currentAccount,
+  currentSession,
+  onAccountChanged,
+  onAccountWanted,
+} from "../lib/session";
 import { onIdentityChange } from "../lib/sessionCache";
 import { useToast } from "./toast";
 
@@ -103,14 +110,18 @@ export const useAuth = create<AuthState>((set, get) => {
       tabs?.postMessage("identity");
     },
     refresh,
+    // a logout ends the account it was started for: both of its requests belong to that session, the
+    // second is not sent once the tab shows another account, and a late answer leaves that account alone
     logout: async () => {
+      const session = currentSession();
       try {
-        await api("/auth/csrf"); // fresh token for the current session
-        await api("/auth/logout", { method: "POST" });
+        await api("/auth/csrf", {}, session); // fresh token for the current session
+        await api("/auth/logout", { method: "POST" }, session);
       } catch (e) {
         // the browser was signed in as someone else, the resync took this tab over
         if (isAccountChanged(e)) return;
       }
+      if (session !== currentSession()) return;
       apply(null);
       tabs?.postMessage("identity");
     },
