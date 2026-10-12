@@ -23,7 +23,8 @@ ENV_FILE="$WORK/production.env"
 dc() { docker compose -p "$PROJ" --env-file "$ENV_FILE" -f compose.yaml -f compose.prod.yaml "$@"; }
 cleanup() { echo "== teardown (only $PROJ) =="; dc down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$WORK"; }
 trap cleanup EXIT
-fail() { echo "FAIL: $*" >&2; exit 1; }
+# on a runner the reason is also an annotation, which the public api shows without access to the job log
+fail() { echo "FAIL: $*" >&2; [ -z "${GITHUB_ACTIONS:-}" ] || echo "::error::$*"; exit 1; }
 rnd() { head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 
 export RABBITMQ_ADMIN_USER=smoke_admin RABBITMQ_ADMIN_PASSWORD="$(rnd)"
@@ -123,8 +124,10 @@ $(diff <(echo "$expected_grants") <(grants) || true)"
 echo "OK every grant in every vhost is the one the model names, and none else"
 
 echo "== a wider grant left from an earlier layout is taken back =="
-q set_permissions -p operations storefront_app '.*' '.*' '.*' >/dev/null
-q set_permissions -p storefront operations_bridge '.*' '^operations\.bridge\.' '^(orders|operations\.bridge\.)' >/dev/null
+# --no-table-headers is an option of the listing commands only, so the grants are written without q
+grant() { dc exec -T -u rabbitmq rabbitmq rabbitmqctl -q set_permissions "$@" >/dev/null; }
+grant -p operations storefront_app '.*' '.*' '.*'
+grant -p storefront operations_bridge '.*' '^operations\.bridge\.' '^(orders|operations\.bridge\.)'
 dc --profile provision run --rm rabbitmq-provision >/dev/null || fail "rabbitmq-provision over stale grants failed"
 [ "$(grants)" = "$expected_grants" ] || fail "provisioning left stale grants:
 $(diff <(echo "$expected_grants") <(grants) || true)"
