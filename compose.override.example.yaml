@@ -15,8 +15,9 @@ services:
     volumes:
       - ./backend:/app
       - media:/app/media
+    # loopback only: runserver with DEBUG answers an unknown host with a debug page
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
 
   frontend:
     build:
