@@ -24,6 +24,8 @@ dc() {
   case "$env_file" in
     "$repo_root"/*) echo "PROD_ENV_FILE must live outside the checkout" >&2; return 1 ;;
   esac
+  # an empty, placeholder-shaped, weak or published secret stops every command; the check names it, never its value
+  bash "$repo_root/scripts/check_prod_secrets.sh" "$env_file" || return 1
   # the images carry the commit as their tag, so an uncommitted change would be built under a tag that names other code
   git -C "$repo_root" diff --quiet HEAD -- || { echo "the checkout has uncommitted changes, a release deploys a commit" >&2; return 1; }
   revision="$(git -C "$repo_root" rev-parse HEAD)" || return 1
@@ -104,6 +106,14 @@ dc run --rm --no-deps media-init
 он содержит значения разработки и в production не используется. Значения-заглушки из
 `.env.example` приложение отвергает при старте — процесс не поднимется, а не поднимется тихо
 с чужим секретом.
+
+Каждый секрет генерируется, а не придумывается: `openssl rand -hex 32` для паролей Postgres и RabbitMQ,
+Erlang cookie и обоих `*_SECRET_KEY`. Пароль внутри `*_URL` совпадает с паролем того же пользователя.
+`dc()` перед каждой командой вызывает `scripts/check_prod_secrets.sh`, и тот отказывает, если секрет пуст,
+похож на заглушку или тестовое значение, короче 32 символов (ключи короче 50), слишком однороден для
+сгенерированного или встречается в отслеживаемых файлах коммита (`.env.e2e`, примеры, документация, тесты)
+либо в dev `.env` рабочей копии. Печатаются только имя переменной и причина, значение никогда. Случайность
+значения проверка не доказывает, она отсекает известные слабые формы, поэтому генерировать обязательно.
 
 `dc()` передаёт Compose уже разрешённый путь, поэтому подмена symlink после проверки ничего не
 даёт. От подмены самого файла между проверкой и чтением проверка не защищает: это задача прав.

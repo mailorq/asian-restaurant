@@ -550,6 +550,8 @@ required = {
         r'env_file="\$\(realpath "\$PROD_ENV_FILE"\)"',
     "a file resolving inside the checkout refuses the call":
         r'case "\$env_file" in\s*\n\s*"\$repo_root"/\*\)[^\n]*return 1',
+    "a weak, placeholder or published secret refuses the call":
+        r'bash "\$repo_root/scripts/check_prod_secrets\.sh" "\$env_file" \|\| return 1',
     "uncommitted changes refuse the call":
         r'git -C "\$repo_root" diff --quiet HEAD --[^\n]*return 1',
     "the revision is the commit checked out":

@@ -163,6 +163,28 @@ if DJANGO_PRODUCTION:
         raise ImproperlyConfigured("do not pass IDENTITY_JWT_PRIVATE_KEY inline; mount a secret file")
     if not (IDENTITY_JWT_PRIVATE_KEY_FILE and os.access(IDENTITY_JWT_PRIVATE_KEY_FILE, os.R_OK)):
         raise ImproperlyConfigured("IDENTITY_JWT_PRIVATE_KEY_FILE must point to a readable secret")
+    # a key whose private part is published lets anyone sign a staff token, and a published previous key lets
+    # anyone sign one that still verifies
+    from cryptography.hazmat.primitives.serialization import (
+        load_pem_private_key,
+        load_pem_public_key,
+    )
+
+    from config.published_keys import is_published
+
+    try:
+        with open(IDENTITY_JWT_PRIVATE_KEY_FILE, "rb") as fh:
+            _signing_public = load_pem_private_key(fh.read(), password=None).public_key()
+    except ValueError as exc:
+        raise ImproperlyConfigured("IDENTITY_JWT_PRIVATE_KEY_FILE does not hold a private key") from exc
+    if is_published(_signing_public):
+        raise ImproperlyConfigured("the signing key is published in the repository history, generate a new one")
+    _previous = IDENTITY_JWT_PREVIOUS_PUBLIC_KEY.replace("\\n", "\n")
+    if not _previous and IDENTITY_JWT_PREVIOUS_PUBLIC_KEY_FILE:
+        with open(IDENTITY_JWT_PREVIOUS_PUBLIC_KEY_FILE, "rb") as fh:
+            _previous = fh.read().decode()
+    if _previous and is_published(load_pem_public_key(_previous.encode())):
+        raise ImproperlyConfigured("the previous signing key is published in the repository history, drop it")
     # the console backend writes every code into the log, where anyone who reads it could confirm a phone
     if SMS_BACKEND == "accounts.sms.ConsoleSender":
         raise ImproperlyConfigured("SMS_BACKEND must not write codes to the log in production")
