@@ -15,6 +15,10 @@ id_rsa
 id_ecdsa
 ops/identity/*.pem
 
+# backup copies carry customers' personal data and are written outside the checkout (DEPLOY.md); a stray one stays out
+*.dump
+media.tar
+
 # python / django
 __pycache__/
 *.py[cod]

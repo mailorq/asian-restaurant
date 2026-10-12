@@ -427,11 +427,15 @@ dc exec operations-consumer python manage.py shell -c "from operations.models im
 # очереди с потребителями и очереди .retry пусты; очереди .dlq только хранят отложенное и базы не меняют
 dc exec -u rabbitmq rabbitmq rabbitmqctl -q list_queues -p storefront name messages consumers
 dc exec -u rabbitmq rabbitmq rabbitmqctl -q list_queues -p operations name messages consumers
-# 3. остановить фоновые процессы и снять копию
+# 3. остановить фоновые процессы и снять копию. в ней персональные данные покупателей, поэтому она пишется вне
+# рабочей копии, и каталог с файлами читает только их владелец
 dc stop relay commands-consumer commands-relay operations-consumer operations-bridge
-dc exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > storefront.dump
-dc exec -T operations-db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > operations.dump
-dc run --rm --no-deps -T --entrypoint tar media-init -cf - -C /media . > media.tar
+umask 077
+BACKUP_DIR="/var/backups/asian-restaurant/$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$BACKUP_DIR"
+dc exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$BACKUP_DIR/storefront.dump"
+dc exec -T operations-db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$BACKUP_DIR/operations.dump"
+dc run --rm --no-deps -T --entrypoint tar media-init -cf - -C /media . > "$BACKUP_DIR/media.tar"
 # 4. открыть снова
 dc up -d
 ```
@@ -441,7 +445,7 @@ dc up -d
 Восстановление на пустой установке идет в таком порядке: поднять `db` и `operations-db`, выдать роли
 (`storefront-db-provision`, `operations-db-provision`), затем `pg_restore --no-owner --role=<side>_migrator`,
 чтобы владельцем объектов стал migrator, а runtime-роль получила свои права. Потом распаковать архив в
-том (`dc run --rm --no-deps -T --entrypoint tar media-init -xf - -C /media --no-same-owner < media.tar`),
+том (`dc run --rm --no-deps -T --entrypoint tar media-init -xf - -C /media --no-same-owner < "$BACKUP_DIR/media.tar"`),
 запустить `media-init` и выполнить обычный релиз. Брокер не копируется. В окне в нем ничего не было в
 пути, а снимок `emit_source_state --snapshot` и `reconcile` в Operations после восстановления
 показывают, что проекции сходятся.
