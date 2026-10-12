@@ -84,6 +84,14 @@ WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = r)
 \gexec
 ALTER ROLE :"migrator" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :'migrator_password';
 ALTER ROLE :"runtime" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :'runtime_password';
+-- a role may store session defaults on itself (ALTER ROLE ... SET), and they would outlive every provisioning that
+-- does not take them back: both roles carry none, globally or in any database
+SELECT format('ALTER ROLE %I%s RESET ALL', r.rolname,
+              CASE WHEN s.setdatabase = 0 THEN '' ELSE format(' IN DATABASE %I', d.datname) END)
+FROM pg_db_role_setting s
+JOIN pg_roles r ON r.oid = s.setrole LEFT JOIN pg_database d ON d.oid = s.setdatabase
+WHERE r.rolname IN (:'migrator', :'runtime')
+\gexec
 -- membership in any other role hands over its rights, the migrator's ownership included
 SELECT format('REVOKE %I FROM %I GRANTED BY %I', g.rolname, m.rolname, gr.rolname)
 FROM pg_auth_members a

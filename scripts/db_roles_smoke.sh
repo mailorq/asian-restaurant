@@ -127,9 +127,20 @@ grep -q "password authentication failed" <<<"$out" || fail "the old bootstrap pa
 echo "OK the dev bootstrap password was refused, then rotated, and no longer authenticates"
 dc up --exit-code-from operations-migrate operations-migrate >"$WORK/operations-release.log" 2>&1 \
   || { tail -20 "$WORK/operations-release.log"; fail "the operations release migration failed"; }
+echo "== a session default a role stored on itself does not outlive provisioning =="
+stored_defaults() {
+  catalog db "$SF_BOOT" storefront "select count(*) from pg_db_role_setting s join pg_roles r on r.oid = s.setrole
+                                    where r.rolname in ('storefront_runtime', 'storefront_migrator')"
+}
+client "$SF_RUNTIME_PW" db storefront_runtime storefront "alter role storefront_runtime set statement_timeout = '1h'" >/dev/null \
+  || fail "storefront_runtime could not store a default on itself, so the check below would prove nothing"
+[ "$(stored_defaults)" = 1 ] || fail "the default storefront_runtime stored is not in the catalog"
+
 echo "== provisioning again converges =="
 dc run --rm storefront-db-provision >/dev/null || fail "a second storefront-db-provision run failed"
 dc run --rm operations-db-provision >/dev/null || fail "a second operations-db-provision run failed"
+[ "$(stored_defaults)" = 0 ] || fail "a default storefront_runtime stored on itself outlived provisioning"
+echo "OK provisioning takes back the session defaults a role stored on itself"
 
 check_side() {  # check_side <service> <bootstrap> <db> <side> <migrator password> <runtime password>
   local svc="$1" boot="$2" db="$3" side="$4" mpw="$5" rpw="$6"
