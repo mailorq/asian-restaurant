@@ -588,6 +588,11 @@ outside = [ln.strip() for ln in doc.replace(match.group(0), "").splitlines() if 
 if outside:
     print("FAIL: DEPLOY.md calls docker compose outside dc(): " + "; ".join(outside))
     raise SystemExit(1)
+# a new release starts from a commit whose CI run is green, checked before anything is built
+gate_at = doc.find('python3 scripts/release_ci_gate.py "$(git rev-parse HEAD)"')
+if gate_at < 0 or gate_at > doc.find("\ndc build\n"):
+    print("FAIL: DEPLOY.md does not check the commit's CI run before the release builds it")
+    raise SystemExit(1)
 # rabbitmq-provision sits in a profile, so a plain `dc up -d` never grants the users and permissions
 release = [ln.strip() for ln in doc.splitlines() if ln.startswith("dc ")]
 steps = ["dc build", "dc up -d rabbitmq", "dc --profile provision run --rm rabbitmq-provision",

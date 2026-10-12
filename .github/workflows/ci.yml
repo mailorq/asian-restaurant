@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   backend:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -66,6 +67,7 @@ jobs:
   # the whole command lifecycle, lease/fencing, expiry and the dispatcher live here; without this
   # job their tests never run and a regression in operations reaches main green
   operations:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -118,6 +120,7 @@ jobs:
       - run: uv run --locked pytest tests/ -q
 
   contracts:
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -134,6 +137,7 @@ jobs:
   security-config:
     # runs from the repo root (no working-directory), so scripts resolve compose files
     # and git paths correctly; ubuntu-latest ships Docker Compose v2 for the config check
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -146,6 +150,8 @@ jobs:
       - run: bash scripts/check_prod_config.sh
       # the release refuses weak and published secrets; here the check itself is held to every kind it must refuse
       - run: bash scripts/check_prod_secrets_test.sh
+      # a release starts from a commit with a green CI run; the gate is held to every state a run can be in
+      - run: python3 scripts/release_ci_gate_test.py
       # the alert rules against the series a stack produces, the zeros other processes export for a consumer's gauge included
       - run: docker run --rm --entrypoint promtool -v "$PWD/ops/prometheus:/etc/prometheus:ro" prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996 test rules /etc/prometheus/alerts_test.yml
 
@@ -283,6 +289,7 @@ jobs:
       - run: bash scripts/ops_pool_smoke.sh
 
   frontend:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     defaults:
       run:
