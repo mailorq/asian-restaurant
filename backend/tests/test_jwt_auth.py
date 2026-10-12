@@ -62,3 +62,42 @@ def test_employee_token_endpoint_authorization(signing, api, user, employee_user
     assert body["token_type"] == "Bearer" and body["expires_in"] == 600
     claims = _decode(body["token"], signing.public_key())
     assert "restaurant_manager" in claims["roles"]
+
+
+def _pem_text(key):
+    return key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    ).decode()
+
+
+def test_the_signing_key_is_parsed_once_per_process(signing, api, employee_user, monkeypatch):
+    jwt_service._load_private_key.cache_clear()
+    jwt_service._jwks.cache_clear()
+    parsed = []
+    real = jwt_service.load_pem_private_key
+    monkeypatch.setattr(jwt_service, "load_pem_private_key", lambda *a, **k: parsed.append(1) or real(*a, **k))
+
+    for _ in range(5):
+        assert api.get("/api/auth/jwks").status_code == 200
+    for _ in range(3):
+        jwt_service.issue_employee_token(employee_user)
+    assert len(parsed) == 1
+
+
+def test_a_rotated_key_file_is_published_after_the_restart_that_picks_it_up(settings, tmp_path):
+    old, new = (rsa.generate_private_key(public_exponent=65537, key_size=2048) for _ in range(2))
+    key_file = tmp_path / "signing.pem"
+    key_file.write_text(_pem_text(old))
+    settings.IDENTITY_JWT_PRIVATE_KEY = ""
+    settings.IDENTITY_JWT_PRIVATE_KEY_FILE = str(key_file)
+
+    def published_modulus():
+        return pyjwt.PyJWK(jwt_service.public_jwks()["keys"][0]).key.public_numbers().n
+
+    assert published_modulus() == old.public_key().public_numbers().n
+    key_file.write_text(_pem_text(new))
+    assert published_modulus() == old.public_key().public_numbers().n
+    # a restart starts the process without what it read before
+    jwt_service._load_private_key.cache_clear()
+    jwt_service._jwks.cache_clear()
+    assert published_modulus() == new.public_key().public_numbers().n

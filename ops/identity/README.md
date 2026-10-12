@@ -26,6 +26,12 @@ Two keys may be published in the JWKS at once, distinguished by `kid`:
 3. after the old TTL window elapses, drop the previous key.
 New tokens sign with the current key; operations selects the verifying key by `kid`.
 
+Each backend process reads and parses its keys once, so every step above takes effect only after the
+backend is restarted (`dc up -d backend` recreates it); writing a new key into the same file changes nothing
+until then. Operations keeps the fetched JWKS for 5 minutes and fetches again for a `kid` it does not know.
+If identity's JWKS cannot be fetched, operations answers `503` with `Retry-After`, not `401`: an unreachable key
+says nothing about the token, and the panel shows the service as unavailable rather than rights as changed.
+
 ## The committed dev key was removed
 The earlier `jwt_dev_private_key.pem` was committed. If this repo was pushed anywhere:
 - treat that key as compromised and rotate (generate a fresh prod key; never reuse it);

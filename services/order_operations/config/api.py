@@ -10,7 +10,7 @@ from ninja import NinjaAPI, Path, Schema, Status
 from ninja.errors import HttpError
 from pydantic import Field, ValidationError
 
-from operations.auth import EmployeeJWTAuth
+from operations.auth import EmployeeJWTAuth, SigningKeysUnavailable
 from operations.commands import CommandConflict, create_transition_command
 from operations.models import OperationCommand, OperationOrder
 from operations.pagination import DEFAULT_PAGE_SIZE, paginate
@@ -27,6 +27,15 @@ def _schema_url(path: str) -> str | None:
 # staff-only by default; only /health and, outside production, the schema are open
 api = NinjaAPI(title="Order Operations API", version="0.1.0", docs_url=_schema_url("/docs"),
                openapi_url=_schema_url("/openapi.json"), auth=EmployeeJWTAuth())
+
+
+@api.exception_handler(SigningKeysUnavailable)
+def signing_keys_unavailable(request, exc):
+    # the panel shows this as the operations service being unavailable, not as rights that changed
+    logger.warning("identity signing keys unavailable: %s", exc.__cause__)
+    response = api.create_response(request, {"detail": "service temporarily unavailable"}, status=503)
+    response["Retry-After"] = "1"
+    return response
 
 
 class HealthOut(Schema):

@@ -10,6 +10,10 @@ STAFF_ROLES = frozenset({"restaurant_operator", "restaurant_manager", EMPLOYEE_R
 _jwks_client = None
 
 
+class SigningKeysUnavailable(Exception):
+    """identity's keys could not be fetched, so whether a token is genuine cannot be told"""
+
+
 def _client() -> jwt.PyJWKClient:
     global _jwks_client
     if _jwks_client is None:
@@ -49,8 +53,14 @@ class EmployeeJWTAuth(HttpBearer):
         # verify signature against Identity's rotating public keys, then the standard
         # claims; the actor is taken from the token, never from client-supplied data
         try:
-            claims = jwt.decode(token, _signing_key(token), algorithms=["RS256"],
-                                audience=AUDIENCE, issuer=ISSUER)
+            key = _signing_key(token)
+        except jwt.PyJWKClientConnectionError as exc:
+            # a key this service has not cached and cannot fetch: a failure here, not a verdict on the token
+            raise SigningKeysUnavailable from exc
+        except Exception:
+            return None
+        try:
+            claims = jwt.decode(token, key, algorithms=["RS256"], audience=AUDIENCE, issuer=ISSUER)
         except Exception:
             return None
         if not (set(claims.get("roles") or []) & STAFF_ROLES):
