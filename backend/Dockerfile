@@ -14,14 +14,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential libpq-dev curl \
-    && rm -rf /var/lib/apt/lists/*
-
 # build context is the repository root (needs packages/ and backend/)
 COPY packages/event_contracts /packages/event_contracts
 COPY backend/ /app/
-RUN uv sync --locked --no-dev
+# every package from the index installs from a wheel whose hash uv.lock pins, so no compiler is needed and no build
+# backend is fetched without a hash; the local event_contracts is built by uv itself (uv_build), with no fetch
+RUN uv sync --locked --no-dev $(python -c "import tomllib; print(' '.join('--no-build-package=' + p['name'] for p in tomllib.load(open('uv.lock', 'rb'))['package'] if 'registry' in p.get('source', {})))")
 
 RUN chmod +x entrypoint.sh
 ENTRYPOINT ["./entrypoint.sh"]

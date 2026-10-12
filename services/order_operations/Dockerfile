@@ -9,7 +9,9 @@ WORKDIR /srv/services/order_operations
 
 COPY packages/event_contracts /srv/packages/event_contracts
 COPY services/order_operations/ /srv/services/order_operations/
-RUN uv sync --locked --no-dev
+# every package from the index installs from a wheel whose hash uv.lock pins, so no build backend is fetched without
+# a hash; the local event_contracts is built by uv itself (uv_build), with no fetch
+RUN uv sync --locked --no-dev $(python -c "import tomllib; print(' '.join('--no-build-package=' + p['name'] for p in tomllib.load(open('uv.lock', 'rb'))['package'] if 'registry' in p.get('source', {})))")
 
 COPY services/order_operations/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
