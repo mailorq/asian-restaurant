@@ -25,7 +25,10 @@ rnd() { head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 SF_BOOT=smoke_boot SF_BOOT_PW="$(rnd)" SF_MIGRATOR_PW="$(rnd)" SF_RUNTIME_PW="$(rnd)"
 # the credentials operations-db used to fall back to in production
 OPS_BOOT=ops_user OPS_BOOT_PW=ops_pass OPS_MIGRATOR_PW="$(rnd)" OPS_RUNTIME_PW="$(rnd)"
-printf 'throwaway\n' > "$WORK/identity.pem"
+# production parses the signing key at start, so the application images below need a real one
+openssl genrsa -out "$WORK/identity.pem" 2048 2>/dev/null
+# read inside the container as 10001
+chmod 644 "$WORK/identity.pem"
 cat > "$ENV_FILE" <<EOF
 SOURCE_REVISION=$PROJ
 POSTGRES_DB=storefront

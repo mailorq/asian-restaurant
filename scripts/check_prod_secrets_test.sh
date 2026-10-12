@@ -23,13 +23,13 @@ PASSWORDS=(POSTGRES_PASSWORD STOREFRONT_DB_MIGRATOR_PASSWORD STOREFRONT_DB_RUNTI
 echo "SOME_DEV_PASSWORD=$(gen 40)" > "$DEV_ENV_FILE"
 
 failed=0
-"$here/check_prod_secrets.sh" "$tmp/base.env" >/dev/null 2>&1 || { echo "FAIL generated secrets were refused"; failed=1; }
+bash "$here/check_prod_secrets.sh" "$tmp/base.env" >/dev/null 2>&1 || { echo "FAIL generated secrets were refused"; failed=1; }
 
 expect() {  # expect <label> <variable> <value> <reason>
   local out
   grep -v "^$2=" "$tmp/base.env" > "$tmp/case.env"
   printf '%s=%s\n' "$2" "$3" >> "$tmp/case.env"
-  if out=$("$here/check_prod_secrets.sh" "$tmp/case.env" 2>&1); then
+  if out=$(bash "$here/check_prod_secrets.sh" "$tmp/case.env" 2>&1); then
     echo "FAIL $1: accepted"; failed=1; return
   fi
   local named=${2%%=*}
@@ -50,7 +50,7 @@ expect "password inside a url" RABBITMQ_URL "amqp://storefront_app:change-me-rab
 expect "copied from the development .env" OPERATIONS_DB_RUNTIME_PASSWORD "$dev_value" "development .env"
 
 # the tracked e2e file used as the production one: every secret in it is refused, none is printed
-if out=$("$here/check_prod_secrets.sh" "$repo/.env.e2e" 2>&1); then
+if out=$(bash "$here/check_prod_secrets.sh" "$repo/.env.e2e" 2>&1); then
   echo "FAIL .env.e2e as production: accepted"; failed=1
 else
   leaked=0
