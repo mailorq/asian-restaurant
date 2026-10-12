@@ -51,6 +51,13 @@ def describe_error(exc: Exception, limit: int = 300) -> str:
     return " ".join(parts)[:limit]
 
 
+def _loggable(value):
+    # a request goes into the log by its method and path: its query string is where a search carries a phone
+    if hasattr(value, "method") and hasattr(value, "path") and hasattr(value, "META"):
+        return f"{value.method} {value.path}"
+    return value
+
+
 class JsonFormatter(logging.Formatter):
     """renders one JSON object per record, carrying every field passed through `extra`"""
 
@@ -64,7 +71,7 @@ class JsonFormatter(logging.Formatter):
         payload.update(_bound.get() or {})
         # the call site is more specific than the surrounding context, so it wins
         payload.update(
-            {k: v for k, v in record.__dict__.items()
+            {k: _loggable(v) for k, v in record.__dict__.items()
              if k not in _RESERVED and not k.startswith("_")}
         )
         if record.exc_info:
