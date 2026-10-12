@@ -103,7 +103,7 @@ echo "== release, as DEPLOY.md runs it =="
 dc build >"$WORK/build.log" 2>&1 || { tail -30 "$WORK/build.log"; fail "the images did not build"; }
 # the application images carry no compiler and no http client a foothold could use to fetch and build its tools
 for image in storefront operations; do
-  found="$(docker run --rm --entrypoint sh "asian-restaurant/$image:$PROJ" -c 'for t in gcc cc g++ make curl wget; do command -v "$t"; done' || true)"
+  found="$(docker run --rm --pull never --entrypoint sh "asian-restaurant/$image:$PROJ" -c 'for t in gcc cc g++ make curl wget; do command -v "$t"; done' || true)"
   [ -z "$found" ] || fail "asian-restaurant/$image carries $(echo $found)"
 done
 echo "OK the storefront and operations images have no compiler, make, curl or wget"
