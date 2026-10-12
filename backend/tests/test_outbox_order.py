@@ -92,12 +92,15 @@ def test_a_retried_discarded_row_goes_first_and_releases_the_rest():
 
 
 def _placed_and_confirmed_order(user, make_product, seed_cart):
+    from django.contrib.auth import get_user_model
+
     from orders import service as order_service
 
     product = make_product(stock=10)
     seed_cart(user.id, {product.id: 1})
     order = order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-resync")
-    order_service.transition(order, "confirmed", expected_status="created")
+    admin = get_user_model().objects.create_superuser(username="+79990000777", password="x")
+    order_service.transition(order, "confirmed", changed_by=admin, expected_status="created")
     return order
 
 

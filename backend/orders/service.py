@@ -6,6 +6,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Max
 from ninja.errors import HttpError
 
+from accounts.roles import Capability, has_capability
 from cart import service as cart_service
 from menu import inventory
 from menu.models import Product
@@ -357,6 +358,9 @@ def _restore_stock(order: Order, staff=None) -> None:
 @transaction.atomic
 def transition(order: Order, new_status: str, changed_by=None, note: str = "",
                expected_status: str | None = None, causation_id=None) -> Order:
+    # every path to a status change meets here, so the actor's right is checked here as well as by each caller
+    if changed_by is None or not has_capability(changed_by, Capability.ORDERS):
+        raise CheckoutError("actor_not_authorized", "Нет права менять статус заказа")
     locked = Order.objects.select_for_update().get(pk=order.pk)
     if expected_status is not None and locked.status != expected_status:
         raise CheckoutError("stale_order", f"Заказ уже в статусе «{locked.get_status_display()}»")

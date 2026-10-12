@@ -90,7 +90,8 @@ def transition_order(request, order_id: int, data: TransitionIn):
             order, data.to_status, changed_by=request.auth, note=data.note, expected_status=data.expected_status
         )
     except order_service.CheckoutError as exc:
-        raise HttpError(409 if exc.code == "stale_order" else 400, exc.message) from exc
+        status = {"stale_order": 409, "actor_not_authorized": 403}.get(exc.code, 400)
+        raise HttpError(status, exc.message) from exc
     return _orders_qs().get(pk=order.pk)
 
 

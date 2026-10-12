@@ -21,7 +21,7 @@ CSRF_TRUSTED_ORIGINS = env.list(
 INSTALLED_APPS = [
     # must be first so it wraps the db and cache backends
     "django_prometheus",
-    "django.contrib.admin",
+    "config.apps.SuperuserAdminConfig",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",

@@ -76,6 +76,7 @@ def _make_transition_action(target: str):
             messages.success(request, f"Переведено заказов: {done}")
 
     action.__name__ = f"transition_to_{target}"
+    action.allowed_permissions = ("change",)
     action.short_description = f"Перевести в «{_STATUS_LABELS[target]}»"
     return action
 

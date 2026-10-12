@@ -41,27 +41,27 @@ def test_checkout_creates_order_and_decrements_stock(client, user, make_product,
     assert OrderOutbox.objects.filter(aggregate_id=str(data["id"]), event_type="order.created").exists()
 
 
-def test_cancel_restores_stock(user, make_product, seed_cart):
+def test_cancel_restores_stock(user, make_product, seed_cart, superuser):
     product = make_product(price="100.00", stock=10)
     seed_cart(user.id, {product.id: 3}, version=1)
     order = order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-cancel-1")
     product.refresh_from_db()
     assert product.stock_quantity == 7
 
-    order_service.transition(order, "cancelled", changed_by=user, expected_status="created")
+    order_service.transition(order, "cancelled", changed_by=superuser, expected_status="created")
 
     product.refresh_from_db()
     assert product.stock_quantity == 10
 
 
-def test_cancel_restores_stock_only_once(user, make_product, seed_cart):
+def test_cancel_restores_stock_only_once(user, make_product, seed_cart, superuser):
     product = make_product(price="100.00", stock=10)
     seed_cart(user.id, {product.id: 3}, version=1)
     order = order_service.checkout(user, "ул. Пушкина, 12", "cash", "idem-cancel-2")
-    order_service.transition(order, "cancelled", changed_by=user)
+    order_service.transition(order, "cancelled", changed_by=superuser)
 
     with pytest.raises(CheckoutError) as exc:
-        order_service.transition(order, "cancelled", changed_by=user)
+        order_service.transition(order, "cancelled", changed_by=superuser)
     assert exc.value.code == "invalid_transition"
 
     product.refresh_from_db()
@@ -420,18 +420,18 @@ def test_last_address_returns_most_recent(client, user, make_product, seed_cart)
     assert data["address"] == "ул. Садовая, 5"
 
 
-def test_transition_enforces_state_machine(user, make_product, seed_cart, client):
+def test_transition_enforces_state_machine(user, make_product, seed_cart, client, superuser):
     product = make_product(stock=10)
     seed_cart(user.id, {product.id: 1}, version=1)
     client.force_login(user)
     order = Order.objects.get(pk=_checkout(client).json()["id"])
 
-    updated = order_service.transition(order, "confirmed", changed_by=user)
+    updated = order_service.transition(order, "confirmed", changed_by=superuser)
     assert updated.status == "confirmed"  # transition returns the freshly-locked order
     assert updated.history.filter(to_status="confirmed").exists()
 
     with pytest.raises(CheckoutError):
-        order_service.transition(order, "delivered")  # confirmed -> delivered not allowed
+        order_service.transition(order, "delivered", changed_by=superuser)  # confirmed -> delivered not allowed
 
 
 def test_checkout_writes_enriched_outbox(client, user, make_product, seed_cart):
@@ -447,15 +447,15 @@ def test_checkout_writes_enriched_outbox(client, user, make_product, seed_cart):
     assert row.event_id is not None
 
 
-def test_transition_rejects_stale_expected_status(client, user, make_product, seed_cart):
+def test_transition_rejects_stale_expected_status(client, user, make_product, seed_cart, superuser):
     product = make_product(stock=10)
     seed_cart(user.id, {product.id: 1}, version=1)
     client.force_login(user)
     order = Order.objects.get(pk=_checkout(client).json()["id"])
 
-    order_service.transition(order, "confirmed", changed_by=user, expected_status="created")
+    order_service.transition(order, "confirmed", changed_by=superuser, expected_status="created")
     with pytest.raises(CheckoutError) as exc:
-        order_service.transition(order, "cancelled", changed_by=user, expected_status="created")
+        order_service.transition(order, "cancelled", changed_by=superuser, expected_status="created")
     assert exc.value.code == "stale_order"
 
 

@@ -1,6 +1,6 @@
 from django import forms
 from django.contrib import admin, messages
-from django.contrib.auth.admin import UserAdmin
+from django.contrib.auth.admin import GroupAdmin, UserAdmin
 from django.contrib.auth.forms import UserChangeForm
 from django.contrib.auth.models import Group
 
@@ -68,7 +68,9 @@ class CustomUserAdmin(UserAdmin):
     fieldsets = UserAdmin.fieldsets + (("Contact", {"fields": ("phone", "customer_version", "authz_version")}),)
     list_display = ("username", "phone", "email", "is_staff", "is_active")
     search_fields = ("username", "phone", "email")
-    readonly_fields = ("customer_version", "authz_version")
+    # the admin opens only to superusers and the employee api checks roles, so is_staff and model permissions
+    # grant nothing; editable here they would only change silently, outside the role services
+    readonly_fields = ("customer_version", "authz_version", "is_staff", "user_permissions")
 
     def get_readonly_fields(self, request, obj=None):
         fields = super().get_readonly_fields(request, obj)
@@ -143,3 +145,44 @@ class CustomUserAdmin(UserAdmin):
     def has_delete_permission(self, request, obj=None):
         # hard delete would leave an obsolete projection with no deletion event; deactivate instead
         return False
+
+
+_ROLE_NAMES = {name.casefold() for name in _STAFF_GROUPS}
+
+
+def _is_role_group(group) -> bool:
+    return group is not None and group.name.casefold() in _ROLE_NAMES
+
+
+class GroupForm(forms.ModelForm):
+    class Meta:
+        model = Group
+        fields = ("name", "permissions")
+
+    def clean_name(self):
+        name = self.cleaned_data["name"]
+        if name.casefold() in _ROLE_NAMES:
+            raise forms.ValidationError("Это имя штатной роли, роли выдает только set_staff_role")
+        return name
+
+
+# a group named after a role is that role: creating, renaming or deleting one would grant or revoke it with
+# no audit and no authorization version, so role groups are read only and their names are taken
+admin.site.unregister(Group)
+
+
+@admin.register(Group)
+class RoleSafeGroupAdmin(GroupAdmin):
+    form = GroupForm
+
+    def has_change_permission(self, request, obj=None):
+        return not _is_role_group(obj) and super().has_change_permission(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        return not _is_role_group(obj) and super().has_delete_permission(request, obj)
+
+    def get_actions(self, request):
+        # bulk delete asks for the permission without an object and would take role groups along
+        actions = super().get_actions(request)
+        actions.pop("delete_selected", None)
+        return actions
