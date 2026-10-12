@@ -384,7 +384,6 @@ MODEL = {
     "cache": {"redis", "backend"},
     "broker_storefront": {"rabbitmq", "backend", "relay", "commands-consumer"},
     "broker_operations": {"rabbitmq", "operations-consumer", "operations-bridge", "commands-relay"},
-    "broker_admin": {"rabbitmq", "rabbitmq-provision"},
     "operations": {"operations-db", "operations-api", "operations-consumer", "operations-bridge", "commands-relay",
                    "operations-migrate", "operations-db-provision"},
     "ops_limiter": {"operations-api", "operations-redis"},
@@ -399,7 +398,8 @@ services, networks = rendered["services"], rendered.get("networks") or {}
 failed = []
 actual = {}
 for name, spec in sorted(services.items()):
-    if spec.get("network_mode") == "none":
+    # none joins nothing; a service in another's network namespace joins what that one joins, checked below
+    if spec.get("network_mode") == "none" or str(spec.get("network_mode", "")).startswith("service:"):
         continue
     joined = spec.get("networks") or {"default": None}
     for network in joined:
@@ -413,6 +413,21 @@ for network in sorted(set(MODEL) | set(actual)):
 publishing = {name for name, spec in services.items() if spec.get("ports")}
 if not publishing <= set().union(*(MODEL[n] for n in ("public_frontend", "public_prometheus"))):
     failed.append(f"these publish a port outside the model: {sorted(publishing)}")
+# the broker's management api, epmd and erlang distribution answer on its loopback only, where provisioning runs
+broker = services.get("rabbitmq") or {}
+broker_env = broker.get("environment") or {}
+if (services.get("rabbitmq-provision") or {}).get("network_mode") != "service:rabbitmq":
+    failed.append("rabbitmq-provision does not run in the broker's network namespace")
+if "rabbitmq=127.0.0.1" not in (broker.get("extra_hosts") or []):
+    failed.append("the broker's node name does not resolve to its loopback")
+if broker_env.get("ERL_EPMD_ADDRESS") != "127.0.0.1":
+    failed.append("epmd of the broker listens beyond its loopback")
+if "inet_dist_use_interface {127,0,0,1}" not in str(broker_env.get("RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS", "")):
+    failed.append("erlang distribution of the broker listens beyond its loopback")
+mounted = {v.get("target"): v.get("source") for v in broker.get("volumes") or []}
+loopback = mounted.get("/etc/rabbitmq/conf.d/90-loopback.conf")
+if not loopback or "management.tcp.ip = 127.0.0.1" not in open(loopback, encoding="utf-8").read():
+    failed.append("the broker's management api listens beyond its loopback")
 limiter = str(((services.get("operations-api") or {}).get("environment") or {}).get("OPERATIONS_REDIS_URL", ""))
 if not limiter.startswith("redis://operations-redis:"):
     failed.append(f"operations-api counts new commands in {limiter!r}, not in operations-redis")

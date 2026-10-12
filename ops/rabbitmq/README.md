@@ -41,6 +41,16 @@ docker compose -f compose.yaml -f compose.prod.yaml exec -T \
   rabbitmq bash -s < ops/rabbitmq/provision.sh
 ```
 
+In production the management api (15672), epmd (4369) and erlang distribution (25672) listen on the
+broker's loopback only (`ops/rabbitmq/loopback.conf`, `ERL_EPMD_ADDRESS`, `inet_dist_use_interface`), so
+no application container reaches them; the broker networks see only amqp (5672) and the prometheus
+endpoint (15692). The release therefore provisions through the `rabbitmq-provision` service, which runs in
+the broker's network namespace (`dc --profile provision run --rm rabbitmq-provision`, see DEPLOY.md), or
+through `exec` into the broker as above. Every step of `provision.sh` that fails stops it with a non-zero
+exit; on the pinned broker clearing a grant that is not there, or adding a vhost that is, succeeds.
+`scripts/prod_bootstrap_smoke.sh` checks the ports each broker network reaches, every grant against the
+model, stale grants taken back and a failed revoke reported.
+
 ## Upgrading the broker version
 
 4.x validates that a topic permission names an existing exchange, so `commands` is created by

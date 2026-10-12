@@ -8,8 +8,10 @@
 #   RABBITMQ_ADMIN_USER RABBITMQ_ADMIN_PASSWORD
 #   STOREFRONT_MQ_PASSWORD OPERATIONS_MQ_PASSWORD BRIDGE_MQ_PASSWORD OPERATIONS_COMMANDS_MQ_PASSWORD
 # Optional env:
-#   RABBITMQ_NODE  target a remote node (e.g. rabbit@rabbitmq) — set by the one-shot
-#                  rabbitmq-provision service; unset when run inside the broker.
+#   RABBITMQ_NODE  target a named node (e.g. rabbit@rabbitmq), set by the one-shot
+#                  rabbitmq-provision service, which runs in the broker's network namespace
+#                  because the broker's management api and erlang distribution listen on its
+#                  loopback only; unset when run inside the broker.
 #   RABBITMQ_MANAGEMENT_HOST RABBITMQ_MANAGEMENT_PORT  management api that declares the
 #                  command exchange, localhost:15672 by default, i.e. inside the broker
 #
@@ -31,9 +33,11 @@ ctl() {
   if [ -n "${RABBITMQ_NODE:-}" ]; then rabbitmqctl -n "$RABBITMQ_NODE" "$@"; else rabbitmqctl "$@"; fi
 }
 
-ensure_vhost() { ctl add_vhost "$1" 2>/dev/null || true; }
+# adding a vhost that exists, clearing permissions that were never granted and closing connections that are
+# not open all succeed on the pinned broker, so any failure of these is real and stops the provisioning
+ensure_vhost() { ctl add_vhost "$1"; }
 ensure_user() { ctl add_user "$1" "$2" 2>/dev/null || ctl change_password "$1" "$2"; }
-revoke() { ctl clear_permissions -p "$1" "$2" 2>/dev/null || true; }
+revoke() { ctl clear_permissions -p "$1" "$2"; }
 
 ensure_vhost /
 ensure_vhost storefront
@@ -71,7 +75,7 @@ rabbitmqadmin \
   declare exchange --name commands --type topic --durable true
 # converge, do not merge: a topic permission left over from an older layout would still grant
 # its routing keys
-ctl clear_topic_permissions -p storefront operations_commands 2>/dev/null || true
+ctl clear_topic_permissions -p storefront operations_commands
 ctl set_topic_permissions -p storefront operations_commands commands '^orders\.transition\.requested$' '^$'
 
 # revoke any stale rights in vhosts each user must not touch (isolation is enforced,
@@ -87,7 +91,7 @@ revoke operations operations_commands
 # RabbitMQ caches authorisation per connection, so a narrowed grant does not apply to an
 # already open channel until it reconnects
 for u in storefront_app operations_consumer operations_bridge operations_commands; do
-  ctl close_all_user_connections "$u" 'permissions reprovisioned' 2>/dev/null || true
+  ctl close_all_user_connections "$u" 'permissions reprovisioned'
 done
 
 echo "rabbitmq provisioning complete"

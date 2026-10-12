@@ -72,29 +72,33 @@ services:
     # definitions.dev.json mounts so load_definitions is off. Bootstrap a baseline admin,
     # then converge users/permissions with the rabbitmq-provision one-shot below.
     hostname: rabbitmq
-    # do not publish the management UI to the host in production (reach it via a tunnel);
-    # keeps 15672/15692 network-internal and avoids host-port clashes
+    # nothing is published to the host in production; the management ui is reached by a tunnel into the broker
     ports: !override []
+    # the management api, epmd and erlang distribution listen on the loopback only, so no application container
+    # reaches them; the node's own name resolves to that loopback, which rabbitmq-provision shares
+    extra_hosts: ["rabbitmq:127.0.0.1"]
     volumes: !override
       - rabbitmqdata:/var/lib/rabbitmq
       - ./ops/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./ops/rabbitmq/loopback.conf:/etc/rabbitmq/conf.d/90-loopback.conf:ro
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_ADMIN_USER:?set RABBITMQ_ADMIN_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_ADMIN_PASSWORD:?set RABBITMQ_ADMIN_PASSWORD}
       RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?set RABBITMQ_ERLANG_COOKIE}
+      ERL_EPMD_ADDRESS: 127.0.0.1
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-kernel inet_dist_use_interface {127,0,0,1}"
 
   # release step before migrations and the runtime (DEPLOY.md), idempotent: creates vhosts, users and permissions
   rabbitmq-provision:
     image: rabbitmq:4.3-management-alpine@sha256:ce634665a8e7262384a793581c20cb8a46343887446eb391b77c814febeca4b2
     profiles: ["provision"]
-    hostname: rabbitmq-provision
-    networks: [broker_admin]
+    # in the broker's network namespace: rabbitmqctl and the management api reach it over its loopback
+    network_mode: "service:rabbitmq"
     depends_on:
       rabbitmq:
         condition: service_healthy
     environment:
       RABBITMQ_NODE: rabbit@rabbitmq
-      RABBITMQ_MANAGEMENT_HOST: rabbitmq
       RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?set RABBITMQ_ERLANG_COOKIE}
       RABBITMQ_ADMIN_USER: ${RABBITMQ_ADMIN_USER:?set RABBITMQ_ADMIN_USER}
       RABBITMQ_ADMIN_PASSWORD: ${RABBITMQ_ADMIN_PASSWORD:?set RABBITMQ_ADMIN_PASSWORD}

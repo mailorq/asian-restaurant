@@ -456,7 +456,7 @@ Operations там же, где в storefront, что nginx отдает восс
 | operations-api | backend | 8000, http | JWKS |
 | operations-consumer, operations-bridge, commands-relay | operations-db, rabbitmq | 5432, 5672 | проекции, мост, отправка команд |
 | operations-migrate, operations-db-provision | operations-db | 5432 | релиз |
-| rabbitmq-provision | rabbitmq | 4369, 25672, 15672 | выдача пользователей и прав |
+| rabbitmq-provision | rabbitmq, в его сетевом пространстве | 127.0.0.1: 4369, 25672, 15672 | выдача пользователей и прав |
 | prometheus | backend 8000, relay 9104, commands-consumer 9102, operations-api 9105, operations-consumer 9101, commands-relay 9103, rabbitmq 15692 | http | сбор метрик |
 | оператор на хосте | prometheus | 9090 (на хосте `127.0.0.1:9090`) | просмотр метрик |
 
@@ -473,7 +473,6 @@ Operations там же, где в storefront, что nginx отдает восс
 | `cache` | redis, backend | нет |
 | `broker_storefront` | rabbitmq, backend, relay, commands-consumer | нет |
 | `broker_operations` | rabbitmq, operations-consumer, operations-bridge, commands-relay | нет |
-| `broker_admin` | rabbitmq, rabbitmq-provision | нет |
 | `operations` | operations-db, operations-api, operations-consumer, operations-bridge, commands-relay, operations-migrate, operations-db-provision | нет |
 | `ops_limiter` | operations-api, operations-redis | нет |
 | `identity` | backend, operations-api | нет |
@@ -482,9 +481,16 @@ Operations там же, где в storefront, что nginx отдает восс
 | `metrics_broker` | prometheus, rabbitmq | нет |
 
 Связи, которые дает общая сеть сверх нужных потоков: внутри одного домена процессы видят порты друг друга;
-backend видит frontend; prometheus видит все порты rabbitmq, а не только 15692; operations-api видит все порты
-backend, а backend видит operations-api. Между доменами storefront и operations связь есть только через rabbitmq
-и сеть `identity`.
+backend видит frontend; operations-api видит все порты backend, а backend видит operations-api. Между доменами
+storefront и operations связь есть только через rabbitmq и сеть `identity`.
+
+У rabbitmq в сетях `broker_*` и `metrics_broker` слушают только AMQP 5672 и метрики 15692: management api
+(15672), epmd (4369) и Erlang-дистрибуция (25672) слушают loopback брокера (`ops/rabbitmq/loopback.conf`,
+`ERL_EPMD_ADDRESS`, `inet_dist_use_interface`), а имя узла `rabbitmq` внутри брокера указывает на этот loopback.
+`rabbitmq-provision` запускается в сетевом пространстве брокера (`network_mode: service:rabbitmq`), поэтому
+`rabbitmqctl` и `rabbitmqadmin` доходят до него, а прикладные контейнеры нет. Остаток, который без
+статических адресов не убрать: процессы приложений видят метрики 15692, prometheus видит AMQP 5672 (без учетки
+он ничего не может). Какие порты из каких сетей открыты, проверяет `scripts/prod_bootstrap_smoke.sh`.
 
 Исключения для исходящего трафика. Маршрут наружу есть у трех сервисов, и он не ограничен по адресам:
 frontend и prometheus получают его вместе с сетью, через которую публикуют порт, backend получает его ради

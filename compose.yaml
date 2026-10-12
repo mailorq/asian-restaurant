@@ -72,7 +72,7 @@ services:
       interval: 15s
       timeout: 10s
       retries: 5
-    networks: [broker_storefront, broker_operations, broker_admin, metrics_broker]
+    networks: [broker_storefront, broker_operations, metrics_broker]
     restart: unless-stopped
 
   storefront-db-provision:
@@ -481,8 +481,6 @@ networks:
   broker_storefront:
     internal: true
   broker_operations:
-    internal: true
-  broker_admin:
     internal: true
   operations:
     internal: true
