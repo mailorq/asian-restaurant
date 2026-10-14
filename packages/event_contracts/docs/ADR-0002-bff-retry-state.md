@@ -1,7 +1,7 @@
 # ADR-0002 - where the storefront BFF keeps the state of a command retry
 
 ## Status
-**Accepted**, before the BFF is built. Covers `POST /api/employee/orders/{id}/transition-commands`.
+**Accepted**. Covers `POST /api/employee/orders/{id}/transition-commands`.
 
 ## Context
 The browser changes an order status through the storefront, which calls the Operations command API
@@ -15,8 +15,8 @@ returns the existing command (200), with another intent a conflict (409). Comman
 so the identity is kept forever. Operations charges its limit on new commands only after it has looked
 the identity up, so a repeat is never charged (see `operations/ratelimit.py`).
 
-An earlier plan let the BFF recognise repeats itself, keyed by `actor_id` and the key. Operations
-treats the same key on another order as a new command, so the BFF waved new commands past its limit.
+A BFF that recognised repeats itself, keyed by `actor_id` and the key, would disagree with Operations:
+the same key on another order is a new command there, and the BFF would let it past its limit.
 
 ## Options
 1. **A reservation in Redis with a bounded lifetime.** Safe only if the BFF identity is exactly the

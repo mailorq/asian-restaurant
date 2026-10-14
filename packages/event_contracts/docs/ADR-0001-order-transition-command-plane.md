@@ -23,7 +23,7 @@ intent, the storefront (sole writer) applies it, and the outcome returns as a ve
    locks the order; checks `expected_status` and transition validity; applies the change through
    `orders.service.transition`; records `CommandInbox` with the serialized outcome; and writes the
    outcome event to `OrderOutbox`. A redelivered command replays the stored outcome verbatim.
-4. **Bridge** relays the outcome to `operations.events` (existing path, existing permissions).
+4. **Bridge** relays the outcome to `operations.events` under the permissions it already holds.
 5. **Operations outcome consumer** finalizes the command through the single transactional
    dispatcher below.
 
@@ -227,7 +227,7 @@ POST /ops-api/orders/{order_id}/transition-commands     Idempotency-Key: <uuid>
      body: expected_status, target_status, reason
      202 Accepted + Location (created) | 200 OK (identical retry) | 409 (key reused with a
      different payload) | 422 (invalid input) | 401 (missing/invalid token)
-GET  /ops-api/commands/{command_id}                      author-scoped for now
+GET  /ops-api/commands/{command_id}                      author-scoped
 ```
 The idempotency key travels as a **header**, not a body field.
 
@@ -238,11 +238,11 @@ authority on whether the order exists, so an unknown order comes back as an `ord
 outcome rather than a 404 at request time. The read endpoint is scoped to the author, so another
 employee's command answers 404 rather than confirming it exists.
 
-## Legacy policy
-`POST /api/employee/orders/{id}/transition` is marked legacy for the migration window; it is not
-removed, and the new operations UI must not call it. `POST /api/employee/inventory/{id}/adjust` is
-**not** marked legacy - it has no command-plane replacement until the `stock.adjust` command exists, and
-labelling it legacy without a successor would leave inventory without a supported path.
+## Direct paths
+`POST /api/employee/orders/{id}/transition` stays for employees who are not on the command plane
+(`transitions_via_commands`), and the operations UI never calls it. `POST /api/employee/inventory/{id}/adjust`
+has no command-plane counterpart, because there is no `stock.adjust` command, so it is the supported path
+for stock.
 
 ## Observability
 Metrics: command-outbox oldest-pending age, command state counters, `timed_out` /

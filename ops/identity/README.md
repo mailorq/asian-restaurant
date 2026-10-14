@@ -32,12 +32,11 @@ until then. Operations keeps the fetched JWKS for 5 minutes and fetches again fo
 If identity's JWKS cannot be fetched, operations answers `503` with `Retry-After`, not `401`: an unreachable key
 says nothing about the token, and the panel shows the service as unavailable rather than rights as changed.
 
-## The committed dev key is refused
-The earlier `jwt_dev_private_key.pem` was committed in 72ee538 and deleted in a223033; the pushed history of
-`dev` still holds it, and the history is not rewritten for it. Anyone can sign with that key, so production
-refuses to start when the signing key or the previous public key is that one: `config/published_keys.py`
-names it by the sha256 of its public part. A key that ever leaks the same way is added there; any environment
-that used one generates a fresh key and rotates as above.
+## Published keys are refused
+A signing key whose private part is public lets anyone sign a staff token. `config/published_keys.py` lists such
+keys by the sha256 of their public part, and production refuses to start when the signing key or the previous
+public key is one of them. A key that leaks is added to that list, and every environment that used it generates
+a fresh key and rotates as above.
 
 ## Authorization lifecycle & revocation SLO
 `employee.service.set_employee_role` is the only path that changes staff membership: it

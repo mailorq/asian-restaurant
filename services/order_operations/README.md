@@ -30,14 +30,13 @@
 | `commands-relay` | публикует команды из outbox и периодически закрывает просроченные | `python manage.py publish_commands --loop` |
 | `operations-bridge` | переносит события из vhost `storefront` в vhost `operations` | `python manage.py bridge_storefront_events` |
 
-Bridge - временный адаптер: storefront пока публикует события в прежнем формате, bridge переводит их в
-версионированные конверты.
+Bridge переводит события storefront (ключи `order.*`) в версионированные конверты `event_contracts`.
 
 Ручные команды:
 
 | Команда | Назначение |
 |---|---|
-| `resolve_command` | закрывает `timed_out` или `dispatch_failed` по решению оператора ([runbook-0008](docs/runbook-0008-command-plane.md)) |
+| `resolve_command` | закрывает `timed_out` или `dispatch_failed` по решению оператора ([ADR-0001](../../packages/event_contracts/docs/ADR-0001-order-transition-command-plane.md)) |
 | `sweep_commands` | тот же проход по просроченным командам, что периодически делает `commands-relay` |
 | `reconcile` | сверяет проекции с завершенным снимком в обе стороны |
 | `dlq` | просмотр, повтор и удаление сообщений из dead-letter очереди |
@@ -72,9 +71,8 @@ Bridge надежен: проверяет каждый сконвертиров�
 этот сервис. Панель обращается к BFF storefront, а тот вызывает
 `POST /ops-api/orders/{order_id}/transition-commands` с заголовком `Idempotency-Key`. Исход читается из
 `GET /ops-api/commands/{command_id}`, и только автором команды. Для остальных сотрудников остается прямая смена
-статуса в storefront (`/api/employee/*`). Устройство контура - в
-[ADR-0001](../../packages/event_contracts/docs/ADR-0001-order-transition-command-plane.md), разбор команд,
-которым нужен оператор, - в [runbook-0008](docs/runbook-0008-command-plane.md).
+статуса в storefront (`/api/employee/*`). Устройство контура и разбор команд, которым нужен оператор, - в
+[ADR-0001](../../packages/event_contracts/docs/ADR-0001-order-transition-command-plane.md).
 
 ## Авторизация
 

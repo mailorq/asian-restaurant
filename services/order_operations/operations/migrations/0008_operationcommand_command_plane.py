@@ -2,8 +2,6 @@ import uuid
 
 from django.db import migrations, models
 
-RUNBOOK = "services/order_operations/docs/runbook-0008-command-plane.md"
-
 
 def _forbid_legacy_rows(apps, schema_editor):
     # 0008 makes actor_id + idempotency_key required and adds a unique constraint. Rows written
@@ -15,7 +13,7 @@ def _forbid_legacy_rows(apps, schema_editor):
         raise RuntimeError(
             "operations.0008 cannot add required actor_id / idempotency_key to existing "
             "OperationCommand rows without inventing invalid data. Archive or delete the "
-            f"pre-command-plane rows first, then re-run. Runbook: {RUNBOOK}"
+            "pre-command-plane rows first (check they hold nothing of value), then re-run."
         )
 
 

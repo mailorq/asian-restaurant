@@ -3,15 +3,13 @@ import uuid
 import django.db.models.deletion
 from django.db import migrations, models
 
-RUNBOOK = "services/order_operations/docs/runbook-0008-command-plane.md"
-
 
 def _forbid_legacy_rows(apps, schema_editor):
     OperationCommand = apps.get_model("operations", "OperationCommand")
     if OperationCommand.objects.using(schema_editor.connection.alias).exists():
         raise RuntimeError(
             "operations.0009 adds a required unique request_event_id; pre-existing commands "
-            f"carry no such id. Archive or delete them first. Runbook: {RUNBOOK}"
+            "carry no such id. Archive or delete them first (check they hold nothing of value)."
         )
 
 
