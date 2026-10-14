@@ -27,4 +27,3 @@ backend/staticfiles/
 backend/.prometheus/
 frontend/dist/
 frontend/.vite/
-MENU_AUDIT.md
