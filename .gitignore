@@ -5,7 +5,7 @@
 !.env.e2e
 compose.override.yaml
 
-# private keys / signing material — never commit (*.pem.example placeholders are not matched)
+# private keys / signing material, never committed
 *.pem
 *.key
 *.p12
