@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # check_prod_secrets.sh <env file>: refuses production secrets that are empty, shaped like a placeholder, too short
 # or too uniform for a generated value, or present in a tracked file of the checked out commit (.env.e2e, examples,
-# docs, test values) or in the development .env of the checkout. it names the variable and the reason, never the
-# value. a value that passes is not proven random: generate every secret, see DEPLOY.md
+# docs, test values) or in the development .env of the checkout, and refuses an environment that exports a variable
+# the production render reads. it names the variable and the reason, never the value. a value that passes is not
+# proven random: generate every secret, see DEPLOY.md
 set -euo pipefail
 
 env_file=${1:?usage: check_prod_secrets.sh <env file>}
@@ -84,8 +85,21 @@ for name in "${!value[@]}"; do
   fi
 done
 
+# compose prefers an exported variable to the same name in the file, so the values read above would not be the
+# ones a container gets; the render takes every variable it reads from the file alone
+if ! names=$(docker compose --env-file "$env_file" -f "$repo/compose.yaml" -f "$repo/compose.prod.yaml" \
+    --profile '*' config --variables | awk 'NR > 1 { print $1 }') || [ -z "$names" ]; then
+  refuse "compose" "the variables of the production render could not be listed"
+else
+  for name in $names; do
+    # dc() sets the revision itself on the compose call
+    [ "$name" = SOURCE_REVISION ] && continue
+    if [ -n "${!name+x}" ]; then refuse "$name" "exported in the environment, which compose prefers to the file"; fi
+  done
+fi
+
 if [ "$failed" -gt 0 ]; then
   echo "$failed production secret(s) refused, values not shown" >&2
   exit 1
 fi
-echo "production secrets: none empty, placeholder shaped, short, uniform or published"
+echo "production secrets: none empty, placeholder shaped, short, uniform, published or replaced from the environment"
