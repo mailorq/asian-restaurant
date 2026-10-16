@@ -15,23 +15,26 @@ pattern=$(mktemp)
 chmod 600 "$pattern"
 trap 'rm -f "$pattern"' EXIT
 
-declare -A value
-while IFS= read -r line || [ -n "$line" ]; do
-  line=${line%$'\r'}
-  [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
-  line=${line#export }
-  name=${line%%=*}
-  [[ $name =~ ^[A-Z_][A-Z0-9_]*$ ]] || continue
-  v=${line#*=}
-  if [[ $v =~ ^\"(.*)\"$ || $v =~ ^\'(.*)\'$ ]]; then v=${BASH_REMATCH[1]}; fi
-  value[$name]=$v
-done < "$env_file"
-
 failed=0
 refuse() {
   echo "refused $1: $2" >&2
   failed=$((failed + 1))
 }
+
+# compose also reads KEY: value, export, quotes and ${...} from this file, so only one literal form is accepted:
+# what is checked here is then exactly what compose takes
+form='^([A-Z_][A-Z0-9_]*)=([^[:space:]"'\''$#\\]*)$'
+declare -A value
+lineno=0
+while IFS= read -r line || [ -n "$line" ]; do
+  lineno=$((lineno + 1))
+  line=${line%$'\r'}
+  [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
+  if ! [[ $line =~ $form ]]; then refuse "line $lineno" "not NAME=value with a literal value"; continue; fi
+  name=${BASH_REMATCH[1]}
+  if [ -n "${value[$name]+x}" ]; then refuse "$name" "set twice"; continue; fi
+  value[$name]=${BASH_REMATCH[2]}
+done < "$env_file"
 
 # bits a guesser faces if every character were drawn at random from the classes the value uses
 bits() {

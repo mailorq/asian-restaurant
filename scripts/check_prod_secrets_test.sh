@@ -62,6 +62,22 @@ expect "published in the repository" STOREFRONT_MQ_PASSWORD "$digest" "published
 expect "password inside a url" RABBITMQ_URL "amqp://storefront_app:change-me-rabbit@rabbitmq:5672/storefront" "placeholder"
 expect "copied from the development .env" OPERATIONS_DB_RUNTIME_PASSWORD "$dev_value" "development .env"
 
+# compose reads more forms than NAME=value, each would hand the container a value the check never saw
+shape() {  # shape <label> <variable the line replaces, or -> <line> <reason>
+  local out
+  grep -v "^$2=" "$tmp/base.env" > "$tmp/case.env"
+  printf '%s\n' "$3" >> "$tmp/case.env"
+  if out=$(run_check "$tmp/case.env" ALT_KEY=weak 2>&1); then echo "FAIL $1: accepted"; failed=1; return; fi
+  if ! grep -q "$4" <<<"$out"; then echo "FAIL $1: expected '$4', got: $out"; failed=1; return; fi
+  echo "ok   $1"
+}
+strong=$(gen 64)
+shape "a second value in the yaml form" - "DJANGO_SECRET_KEY: weak" "not NAME=value"
+shape "a value taken from the environment" DJANGO_SECRET_KEY "DJANGO_SECRET_KEY=\${ALT_KEY:-$strong}" "not NAME=value"
+shape "a quoted value" DJANGO_SECRET_KEY "DJANGO_SECRET_KEY=\"$strong\"" "not NAME=value"
+shape "an export line" DJANGO_SECRET_KEY "export DJANGO_SECRET_KEY=$strong" "not NAME=value"
+shape "a variable set twice" - "DJANGO_SECRET_KEY=$strong" "DJANGO_SECRET_KEY: set twice"
+
 # what makes the file alone insufficient: compose gives an exported variable priority over the file of --env-file
 printf 'services:\n  probe:\n    image: "probe:${PROBE_TAG}"\n' > "$tmp/premise.yaml"
 printf 'PROBE_TAG=from-file\n' > "$tmp/premise.env"
