@@ -23,7 +23,7 @@ order_confirmed() { be python manage.py shell -c "import sys; from accounts.role
 from orders.models import Order; sys.exit(0 if Order.objects.get(idempotency_key='e2e-key').status == 'confirmed' else 1)"; }
 command_succeeded() { ops python manage.py shell -c "import sys; from operations.models import OperationCommand; sys.exit(0 if OperationCommand.objects.filter(idempotency_key='e2e-transition', status='succeeded').exists() else 1)"; }
 
-cleanup() { echo "== teardown (only $PROJ) =="; dc down -v --remove-orphans >/dev/null 2>&1 || true; }
+cleanup() { echo "== teardown (only $PROJ) =="; dc down -v --remove-orphans --rmi local >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 wait_for() {  # wait_for <label> <cmd...>
