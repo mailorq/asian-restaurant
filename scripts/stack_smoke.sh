@@ -4,8 +4,10 @@
 # keeping a tsdb volume written before its hardening, and the network model: who reaches whom and who has a route out
 # reads only tracked config and a throwaway env-file outside the checkout, and tears down only its own project
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/disposable_project.sh"
 
-PROJ="${SMOKE_PROJECT:-ar_stack_$(date +%s)_$$}"
+PROJ="ar_stack_$(date +%s)_$$"
+claim_project "$PROJ"
 PY_IMAGE=python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0
 WORK="$(mktemp -d)"
 REPO="$PWD"
@@ -18,12 +20,15 @@ ENV_FILE="$WORK/production.env"
 
 dc() { docker compose -p "$PROJ" --env-file "$ENV_FILE" -f compose.yaml -f compose.prod.yaml -f "$WORK/smoke.yaml" "$@"; }
 cleanup() {
+  local status=$?
   echo "== teardown (only $PROJ) =="
   docker rm -f "${PROJ}_placeholder" "${PROJ}_geocoder" >/dev/null 2>&1 || true
   dc --profile provision down -v --remove-orphans >/dev/null 2>&1 || true
   # the application images of this run carry its project as their tag
   docker image rm "asian-restaurant/storefront:$PROJ" "asian-restaurant/operations:$PROJ" "asian-restaurant/frontend:$PROJ" >/dev/null 2>&1 || true
   rm -rf "$WORK"
+  if ! teardown_clean "$PROJ"; then [ "$status" -ne 0 ] || status=1; fi
+  exit "$status"
 }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }

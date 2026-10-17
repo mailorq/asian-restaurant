@@ -5,10 +5,12 @@
 # bytes of every media file, the photo nginx serves, and a fresh snapshot run that operations reconciles
 # reads only tracked config and throwaway files outside the checkout, and tears down only its own two projects
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/disposable_project.sh"
 
 STAMP="$(date +%s)_$$"
 SOURCE="ar_backup_$STAMP"
 TARGET="ar_restore_$STAMP"
+claim_project "$SOURCE" "$TARGET"
 PY_IMAGE=python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0
 WORK="$(mktemp -d)"
 if command -v cygpath >/dev/null 2>&1; then
@@ -20,11 +22,14 @@ PROJ="$SOURCE"
 
 dc() { docker compose -p "$PROJ" --env-file "$ENV_FILE" -f compose.yaml -f compose.prod.yaml -f "$WORK/stand.yaml" "$@"; }
 cleanup() {
+  local status=$?
   echo "== teardown (only $SOURCE and $TARGET) =="
   for PROJ in "$SOURCE" "$TARGET"; do dc --profile provision down -v --remove-orphans >/dev/null 2>&1 || true; done
   # both stands run the application images of this run, tagged with the source project
   docker image rm "asian-restaurant/storefront:$SOURCE" "asian-restaurant/operations:$SOURCE" "asian-restaurant/frontend:$SOURCE" >/dev/null 2>&1 || true
   rm -rf "$WORK"
+  if ! teardown_clean "$SOURCE" "$TARGET"; then [ "$status" -ne 0 ] || status=1; fi
+  exit "$status"
 }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }

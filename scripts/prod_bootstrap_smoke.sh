@@ -6,8 +6,10 @@
 # reads only tracked config and a throwaway env-file outside the checkout, and tears down only
 # its own project
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/disposable_project.sh"
 
-PROJ="${SMOKE_PROJECT:-ar_prodsmoke_$(date +%s)_$$}"
+PROJ="ar_prodsmoke_$(date +%s)_$$"
+claim_project "$PROJ"
 # the image media-init pins; this test only needs a python that can reach the broker
 PY_IMAGE=python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0
 WORK="$(mktemp -d)"
@@ -21,7 +23,14 @@ fi
 ENV_FILE="$WORK/production.env"
 
 dc() { docker compose -p "$PROJ" --env-file "$ENV_FILE" -f compose.yaml -f compose.prod.yaml "$@"; }
-cleanup() { echo "== teardown (only $PROJ) =="; dc down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$WORK"; }
+cleanup() {
+  local status=$?
+  echo "== teardown (only $PROJ) =="
+  dc down -v --remove-orphans >/dev/null 2>&1 || true
+  rm -rf "$WORK"
+  if ! teardown_clean "$PROJ"; then [ "$status" -ne 0 ] || status=1; fi
+  exit "$status"
+}
 trap cleanup EXIT
 # on a runner the reason is also an annotation, which the public api shows without access to the job log
 fail() { echo "FAIL: $*" >&2; [ -z "${GITHUB_ACTIONS:-}" ] || echo "::error::$*"; exit 1; }

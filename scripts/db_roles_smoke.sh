@@ -5,8 +5,10 @@
 # the first release after the split is modelled too: it is refused while an older process still holds a bootstrap session, and the old dev bootstrap password of operations is refused until rotated
 # reads only tracked config and a throwaway env-file outside the checkout, and tears down only its own project
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/disposable_project.sh"
 
-PROJ="${SMOKE_PROJECT:-ar_dbroles_$(date +%s)_$$}"
+PROJ="ar_dbroles_$(date +%s)_$$"
+claim_project "$PROJ"
 PG_IMAGE=postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
 WORK="$(mktemp -d)"
 # docker on windows takes host paths in its own form, and git bash must not rewrite the container side
@@ -17,7 +19,16 @@ fi
 ENV_FILE="$WORK/production.env"
 
 dc() { docker compose -p "$PROJ" --env-file "$ENV_FILE" -f compose.yaml -f compose.prod.yaml "$@"; }
-cleanup() { echo "== teardown (only $PROJ) =="; docker rm -f "${PROJ}_stale" >/dev/null 2>&1 || true; dc down -v --remove-orphans >/dev/null 2>&1 || true; docker image rm "asian-restaurant/storefront:$PROJ" "asian-restaurant/operations:$PROJ" >/dev/null 2>&1 || true; rm -rf "$WORK"; }
+cleanup() {
+  local status=$?
+  echo "== teardown (only $PROJ) =="
+  docker rm -f "${PROJ}_stale" >/dev/null 2>&1 || true
+  dc down -v --remove-orphans >/dev/null 2>&1 || true
+  docker image rm "asian-restaurant/storefront:$PROJ" "asian-restaurant/operations:$PROJ" >/dev/null 2>&1 || true
+  rm -rf "$WORK"
+  if ! teardown_clean "$PROJ"; then [ "$status" -ne 0 ] || status=1; fi
+  exit "$status"
+}
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 rnd() { head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n'; }

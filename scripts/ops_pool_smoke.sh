@@ -5,8 +5,10 @@
 # the api must never hold more than one connection, the saturation counter must match the json 503s, the pids limit is never reached, and no burst leaves threads behind for the next
 # reads only tracked config and a throwaway env-file outside the checkout, and tears down only its own project
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/disposable_project.sh"
 
-PROJ="${SMOKE_PROJECT:-ar_opspool_$(date +%s)_$$}"
+PROJ="ar_opspool_$(date +%s)_$$"
+claim_project "$PROJ"
 PY_IMAGE=python:3.13-slim@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0
 WORK="$(mktemp -d)"
 # docker on windows takes host paths in its own form, and git bash must not rewrite the container side
@@ -17,7 +19,15 @@ fi
 ENV_FILE="$WORK/production.env"
 
 dc() { docker compose -p "$PROJ" --env-file "$ENV_FILE" -f compose.yaml -f compose.prod.yaml -f "$WORK/pool-of-one.yaml" "$@"; }
-cleanup() { echo "== teardown (only $PROJ) =="; dc down -v --remove-orphans >/dev/null 2>&1 || true; docker image rm "asian-restaurant/storefront:$PROJ" "asian-restaurant/operations:$PROJ" >/dev/null 2>&1 || true; rm -rf "$WORK"; }
+cleanup() {
+  local status=$?
+  echo "== teardown (only $PROJ) =="
+  dc down -v --remove-orphans >/dev/null 2>&1 || true
+  docker image rm "asian-restaurant/storefront:$PROJ" "asian-restaurant/operations:$PROJ" >/dev/null 2>&1 || true
+  rm -rf "$WORK"
+  if ! teardown_clean "$PROJ"; then [ "$status" -ne 0 ] || status=1; fi
+  exit "$status"
+}
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 rnd() { head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n'; }

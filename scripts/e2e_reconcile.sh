@@ -4,6 +4,7 @@
 # Uses only tracked config (.env.e2e + compose.e2e.yaml); no gitignored override or local
 # .env. Never touches the shared dev/staging project. No manual pika publishing.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/disposable_project.sh"
 
 if [ "${E2E_ALLOW_DESTRUCTIVE:-0}" != "1" ]; then
   echo "refusing to run: this test creates and destroys an isolated stack." >&2
@@ -12,7 +13,8 @@ if [ "${E2E_ALLOW_DESTRUCTIVE:-0}" != "1" ]; then
 fi
 
 # unique project per invocation/CI job so parallel runs never share volumes
-PROJ="${E2E_PROJECT:-ar_e2e_$(date +%s)_$$}"
+PROJ="ar_e2e_$(date +%s)_$$"
+claim_project "$PROJ"
 CO=(-p "$PROJ" --env-file .env.e2e -f compose.yaml -f compose.e2e.yaml)
 dc() { docker compose "${CO[@]}" "$@"; }
 be() { dc exec -T backend "$@"; }
@@ -23,7 +25,13 @@ order_confirmed() { be python manage.py shell -c "import sys; from accounts.role
 from orders.models import Order; sys.exit(0 if Order.objects.get(idempotency_key='e2e-key').status == 'confirmed' else 1)"; }
 command_succeeded() { ops python manage.py shell -c "import sys; from operations.models import OperationCommand; sys.exit(0 if OperationCommand.objects.filter(idempotency_key='e2e-transition', status='succeeded').exists() else 1)"; }
 
-cleanup() { echo "== teardown (only $PROJ) =="; dc down -v --remove-orphans --rmi local >/dev/null 2>&1 || true; }
+cleanup() {
+  local status=$?
+  echo "== teardown (only $PROJ) =="
+  dc down -v --remove-orphans --rmi local >/dev/null 2>&1 || true
+  if ! teardown_clean "$PROJ"; then [ "$status" -ne 0 ] || status=1; fi
+  exit "$status"
+}
 trap cleanup EXIT
 
 wait_for() {  # wait_for <label> <cmd...>

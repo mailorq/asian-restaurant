@@ -152,6 +152,8 @@ jobs:
       - run: bash scripts/check_prod_secrets_test.sh
       # a release starts from a commit with a green CI run; the gate is held to every state a run can be in
       - run: python3 scripts/release_ci_gate_test.py
+      # a smoke tears its project down with down -v, so it may only claim a name nothing carries yet
+      - run: bash scripts/disposable_project_test.sh
       # the alert rules against the series a stack produces, the zeros other processes export for a consumer's gauge included
       - run: docker run --rm --entrypoint promtool -v "$PWD/ops/prometheus:/etc/prometheus:ro" prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996 test rules /etc/prometheus/alerts_test.yml
 

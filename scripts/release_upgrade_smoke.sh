@@ -5,8 +5,10 @@
 # works on a throwaway git checkout of HEAD outside the repository, publishes what a release publishes (127.0.0.1:80
 # and 127.0.0.1:9090), and tears down only its own project and images
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/disposable_project.sh"
 
-PROJ="${SMOKE_PROJECT:-ar_release_$(date +%s)_$$}"
+PROJ="ar_release_$(date +%s)_$$"
+claim_project "$PROJ"
 WORK="$(mktemp -d)"
 CHECKOUT="$WORK/checkout"
 ENV_FILE="$WORK/production.env"
@@ -16,6 +18,7 @@ export COMPOSE_PROJECT_NAME="$PROJ" PROD_ENV_FILE="$ENV_FILE"
 revisions=()
 dc() { (cd "$CHECKOUT" && SOURCE_REVISION="$(git rev-parse HEAD)" docker compose --env-file "$ENV_FILE" -f compose.yaml -f compose.prod.yaml "$@"); }
 cleanup() {
+  local status=$?
   echo "== teardown (only $PROJ) =="
   dc --profile provision down -v --remove-orphans >/dev/null 2>&1 || true
   for revision in "${revisions[@]}"; do
@@ -23,6 +26,8 @@ cleanup() {
       "asian-restaurant/frontend:$revision" >/dev/null 2>&1 || true
   done
   rm -rf "$WORK"
+  if ! teardown_clean "$PROJ"; then [ "$status" -ne 0 ] || status=1; fi
+  exit "$status"
 }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
