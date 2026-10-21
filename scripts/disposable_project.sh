@@ -18,11 +18,11 @@ claim_project() {  # claim_project <project>...: refuses a name that already car
   local p n
   for p in "$@"; do
     if ! n=$(project_resources "$p"); then
-      echo "refusing project $p: docker could not be asked what it holds" >&2
+      echo "refusing $p: docker could not be asked what it holds" >&2
       exit 2
     fi
     if [ "$n" -ne 0 ]; then
-      echo "refusing project $p: $n docker resources already carry this name and the teardown would remove them" >&2
+      echo "refusing $p: $n docker resources already carry this name and the teardown would remove them" >&2
       exit 2
     fi
   done

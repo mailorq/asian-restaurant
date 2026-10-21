@@ -16,6 +16,13 @@ ENV_FILE="$WORK/production.env"
 export COMPOSE_PROJECT_NAME="$PROJ" PROD_ENV_FILE="$ENV_FILE"
 
 revisions=()
+# the images of a commit carry its sha as their tag; the teardown removes only tags claimed here
+claim_revision() {
+  local revision
+  revision="$(git -C "$CHECKOUT" rev-parse HEAD)"
+  claim_project "$revision"
+  revisions+=("$revision")
+}
 dc() { (cd "$CHECKOUT" && SOURCE_REVISION="$(git rev-parse HEAD)" docker compose --env-file "$ENV_FILE" -f compose.yaml -f compose.prod.yaml "$@"); }
 cleanup() {
   local status=$?
@@ -26,7 +33,7 @@ cleanup() {
       "asian-restaurant/frontend:$revision" >/dev/null 2>&1 || true
   done
   rm -rf "$WORK"
-  if ! teardown_clean "$PROJ"; then [ "$status" -ne 0 ] || status=1; fi
+  if ! teardown_clean "$PROJ" "${revisions[@]}"; then [ "$status" -ne 0 ] || status=1; fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -44,7 +51,7 @@ git archive HEAD | tar -x -C "$CHECKOUT"
 git -C "$CHECKOUT" init -q
 git -C "$CHECKOUT" add -A
 git -C "$CHECKOUT" -c user.name=smoke -c user.email=smoke@example.invalid commit -qm first
-revisions+=("$(git -C "$CHECKOUT" rev-parse HEAD)")
+claim_revision
 
 openssl genrsa -out "$WORK/identity.pem" 2048 2>/dev/null
 # read inside the container as 10001
@@ -99,7 +106,7 @@ class Migration(migrations.Migration):
 EOF
 git -C "$CHECKOUT" add -A
 git -C "$CHECKOUT" -c user.name=smoke -c user.email=smoke@example.invalid commit -qm second
-revisions+=("$(git -C "$CHECKOUT" rev-parse HEAD)")
+claim_revision
 second="${revisions[1]}"
 # files the second commit does not have, one per image: untracked, and git-ignored but not docker-ignored
 probes=("storefront /app/release_probe.py" "storefront /app/release_probe.log"
@@ -152,7 +159,7 @@ echo "OK untracked and git-ignored files of the checkout stay out of the images"
 
 echo "== a commit that was not built is refused =="
 git -C "$CHECKOUT" -c user.name=smoke -c user.email=smoke@example.invalid commit -q --allow-empty -m third
-revisions+=("$(git -C "$CHECKOUT" rev-parse HEAD)")
+claim_revision
 if out="$(cd "$CHECKOUT" && . "$WORK/dc.sh" && dc up -d 2>&1)"; then
   fail "dc() started a commit it had not built"
 fi

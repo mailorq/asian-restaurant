@@ -20,7 +20,7 @@ failed=0
 image() { printf 'FROM scratch\nLABEL probe=disposable_project\n' | docker build -q -t "$1" - >/dev/null; }
 refused() {  # refused <label> <project>
   if (claim_project "$2") 2>"$err"; then echo "FAIL $1: claimed"; failed=1; return; fi
-  if ! grep -q "refusing project $2" "$err"; then echo "FAIL $1: $(cat "$err")"; failed=1; return; fi
+  if ! grep -q "refusing $2" "$err"; then echo "FAIL $1: $(cat "$err")"; failed=1; return; fi
   echo "ok   $1"
 }
 
@@ -44,6 +44,9 @@ if docker network inspect "${base}n_default" >/dev/null 2>&1; then echo "ok   a 
 if teardown_clean "${base}n" 2>"$err"; then echo "FAIL a teardown that left a network: passed"; failed=1
 elif grep -q "teardown of ${base}n left 1 docker resources" "$err"; then echo "ok   a teardown that left something names it"
 else echo "FAIL teardown message: $(cat "$err")"; failed=1; fi
+if teardown_clean "${base}t" 2>"$err"; then echo "FAIL a teardown that left an image tagged with a revision: passed"; failed=1
+elif grep -q "teardown of ${base}t left 1 docker resources" "$err"; then echo "ok   a teardown that could not remove an image tagged with a revision names it"
+else echo "FAIL tagged image teardown message: $(cat "$err")"; failed=1; fi
 remove
 if teardown_clean "${base}n" "${base}v" "${base}i" "${base}t" 2>"$err"; then echo "ok   a complete teardown passes"; else echo "FAIL a complete teardown: $(cat "$err")"; failed=1; fi
 
@@ -56,6 +59,13 @@ for f in "$here"/*.sh; do
   if [ -z "$claim" ] || [ "$claim" -gt "$trap_at" ]; then echo "FAIL $name arms its teardown before it claims the project"; failed=1; continue; fi
   if grep -qE '^(PROJ|SOURCE|TARGET)="\$\{' "$f"; then echo "FAIL $name takes its project name from the environment"; failed=1; continue; fi
   if ! grep -q 'teardown_clean ' "$f"; then echo "FAIL $name does not check what its teardown left"; failed=1; continue; fi
+  # a smoke that tags images with commits removes only the tags it claimed, and its teardown counts them
+  if grep -q 'revisions+=' "$f"; then
+    if grep -B1 'revisions+=' "$f" | grep -v -e 'revisions+=' -e '^--$' | grep -qv 'claim_project'; then
+      echo "FAIL $name lists a revision for removal without claiming its tag"; failed=1; continue
+    fi
+    if ! grep -q 'teardown_clean .*"${revisions\[@\]}"' "$f"; then echo "FAIL $name does not check the revision tags it removes"; failed=1; continue; fi
+  fi
   echo "ok   $name claims its project and checks its teardown"
 done
 
