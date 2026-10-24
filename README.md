@@ -214,6 +214,7 @@ bash scripts/check_prod_config.sh             # гейт production-рендер
 bash scripts/stack_smoke.sh                   # nginx, prometheus, сети и командный контур на выпущенном стеке
 bash scripts/release_upgrade_smoke.sh         # два релиза подряд по DEPLOY.md; занимает 127.0.0.1:80 и :9090
 bash scripts/restore_rehearsal.sh             # копия в окне обслуживания и восстановление в пустой стек
+bash scripts/delivery_faults_smoke.sh         # доставка событий и команд при сбоях; --all добавляет простой брокера и пачку
 E2E_ALLOW_DESTRUCTIVE=1 bash scripts/e2e_reconcile.sh
 ```
 
