@@ -113,8 +113,16 @@ depth() {  # depth <vhost> <queue>
 }
 metric() {  # metric <service> <port> <name> [label fragment...]: the sum of the matching samples
   dc exec -T "$1" python -c "
-import sys, urllib.request
-text = urllib.request.urlopen('http://127.0.0.1:$2/metrics', timeout=5).read().decode()
+import sys, time, urllib.request
+# a process that has just restarted answers once its metrics server is up
+for _ in range(60):
+    try:
+        text = urllib.request.urlopen('http://127.0.0.1:$2/metrics', timeout=5).read().decode()
+        break
+    except OSError:
+        time.sleep(0.5)
+else:
+    raise SystemExit('no metrics on :$2')
 print(int(sum(float(line.rsplit(' ', 1)[1]) for line in text.splitlines()
               if line.startswith(sys.argv[1] + '{') and all(part in line for part in sys.argv[2:]))))
 " "${@:3}"
