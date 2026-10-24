@@ -205,6 +205,8 @@ services:
   # transactional outbox relay: publishes pending order events to RabbitMQ
   relay:
     <<: *app-hardening
+    # python as pid 1 never receives sigterm, so every stop would end in a kill
+    init: true
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -301,6 +303,7 @@ services:
 
   operations-consumer:
     <<: *app-hardening
+    init: true
     build:
       context: .
       dockerfile: services/order_operations/Dockerfile
@@ -327,6 +330,7 @@ services:
 
   operations-bridge:
     <<: *app-hardening
+    init: true
     build:
       context: .
       dockerfile: services/order_operations/Dockerfile
@@ -349,6 +353,7 @@ services:
 
   commands-consumer:
     <<: *app-hardening
+    init: true
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -381,6 +386,7 @@ services:
 
   commands-relay:
     <<: *app-hardening
+    init: true
     build:
       context: .
       dockerfile: services/order_operations/Dockerfile

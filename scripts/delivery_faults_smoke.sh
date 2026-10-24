@@ -604,6 +604,27 @@ conn.close()
   ok "a message that is no command is dead lettered, listed without being consumed and dropped by the operator"
 }
 
+scenario_planned_stop() {
+  echo "== a planned stop of every delivery process, as a release stops them =="
+  local service container started took code order command
+  for service in relay operations-bridge operations-consumer commands-relay commands-consumer; do
+    container="$(dc ps -q "$service")"
+    started=$SECONDS
+    docker stop -t 30 "$container" >/dev/null
+    took=$((SECONDS - started))
+    code="$(docker inspect -f '{{.State.ExitCode}}' "$container")"
+    docker start "$container" >/dev/null
+    # 137 is the kill that follows a sigterm the process never received
+    [ "$code" != 137 ] || fail "$service ignored sigterm and was killed after $took seconds"
+    [ "$took" -lt 10 ] || fail "$service took $took seconds to stop"
+  done
+  order="$(new_order)"
+  until_ok 60 projected_is "$order" "1 created" || fail "order $order was never projected after the stops"
+  command="$(command_for "$order" created confirmed)"
+  until_ok 120 command_status_is "$command" succeeded || fail "the command after the stops ended $(command_status "$command")"
+  ok "each delivery process stops on sigterm at once and delivery resumes after the start"
+}
+
 # long: the broker away for longer than the relay backoff reaches, while orders move and a command waits
 scenario_broker_outage() {
   echo "== the broker away for $OUTAGE seconds while orders move and a command waits =="
@@ -747,6 +768,7 @@ main() {
   scenario_command_timed_out_then_outcome
   scenario_command_dispatch_failed
   scenario_command_dead_letter
+  scenario_planned_stop
   if [ "$long" = 1 ]; then
     scenario_broker_outage
     scenario_crash_in_burst
