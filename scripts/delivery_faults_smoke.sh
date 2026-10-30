@@ -163,6 +163,25 @@ waiting() { [ -n "$(waiting_pid "$@")" ]; }
 end_backend() {  # end_backend <sql fn> <pid>
   "$1" -c "SELECT pg_terminate_backend($2)" >/dev/null
 }
+# the catch: a redelivery first reads the inbox by its own id, so a session that holds the whole inbox table makes that
+# read wait where pg_stat_activity shows which id came back
+catch() {  # catch <db service> <user> <database> <table>
+  dc exec -d "$1" psql -X -q -U "$2" -d "$3" -c "SET application_name = 'faults_catcher'" -c "BEGIN" \
+    -c "LOCK TABLE $4 IN ACCESS EXCLUSIVE MODE" -c "SELECT pg_sleep(900)"
+}
+caught() {  # caught <sql fn>: the catcher holds its table, so the transaction it queued behind has ended
+  [ "$("$1" -c "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+                WHERE a.application_name = 'faults_catcher' AND l.locktype = 'relation'
+                AND l.mode = 'AccessExclusiveLock' AND l.granted")" = 1 ]
+}
+read_waiting() {  # read_waiting <sql fn> <table> <id>: a read of the table for that id waits on the catcher
+  # django sends a uuid as its hex digits, without the dashes
+  [ -n "$("$1" -c "SELECT pid FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'SELECT%'
+                   AND query LIKE '%FROM \"$2\"%' AND query LIKE '%''${3//-/}''::uuid%'")" ]
+}
+release_catch() {  # release_catch <sql fn>
+  "$1" -c "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE application_name = 'faults_catcher'" >/dev/null
+}
 # the broker connection of a service, by the address it connects from
 drop_broker_connection() {  # drop_broker_connection <service> <network>
   local address pid
@@ -394,34 +413,30 @@ scenario_reorder_past_budget() {
 
 scenario_consumer_commit_before_ack() {
   echo "== the consumer commits an event and loses its broker connection before the ack =="
-  local order event restarted before
+  local order event
   order="$(new_order)"
   until_ok 60 projected_is "$order" "1 created" || fail "order $order was never projected"
   hold_on ops_sql "INSERT ON operations_inboxevent" \
     "NEW.event_type = 'orders.order.status_changed.v1' AND NEW.aggregate_version = 2"
   lock operations-db "$OPS_BOOT" operations
   until_ok 30 lock_held ops_sql || fail "the holder never took the lock"
-  restarted="$(restarts operations-consumer)"
-  before="$(idempotent)"
   move "$order" confirmed
   until_ok 60 waiting ops_sql 'INSERT INTO "operations_inboxevent"' || fail "the consumer never reached the inbox write"
+  event="$(event_of "$order" 2)"
   drop_broker_connection operations-consumer broker_operations
+  catch operations-db "$OPS_BOOT" operations operations_inboxevent
   # the transaction is let through: it commits after the connection that would carry the ack is gone
   unlock ops_sql
+  until_ok 60 caught ops_sql || fail "the held transaction never finished"
+  expect "the projection after the commit" "2 confirmed" "$(projected "$order")"
+  until_ok 120 read_waiting ops_sql operations_inboxevent "$event" || fail "event $event was never delivered again"
+  release_catch ops_sql
   hold_off ops_sql operations_inboxevent
-  event="$(event_of "$order" 2)"
-  until_true 60 '[ "$(inbox_count "$event")" = 1 ]' || fail "the held transaction never committed"
-  # the delivery comes back, to a restarted process or a reconnected one
-  until_ok 120 redelivered_to_consumer "$restarted" "$before" || fail "the unacknowledged event was never delivered again"
+  until_true 60 '[ "$(depth operations operations.projection)" = 0 ]' || fail "the redelivered event was never acknowledged"
   expect "inbox rows of the event" 1 "$(inbox_count "$event")"
   expect "the projection" "2 confirmed" "$(projected "$order")"
   expect "the projection dead letters" 0 "$(depth operations operations.projection.dlq)"
-  ok "an event committed before a lost ack is delivered again and applied once"
-}
-redelivered_to_consumer() {  # redelivered_to_consumer <restarts before> <idempotent count before>
-  local now
-  now="$(idempotent)" || return 1
-  if [ "$(restarts operations-consumer)" != "$1" ]; then [ "$now" -ge 1 ]; else [ "$now" -gt "$2" ]; fi
+  ok "an event committed before a lost ack comes back by its own event id and its effect is applied once"
 }
 
 scenario_command_confirm_unrecorded_settled() {
@@ -492,31 +507,30 @@ scenario_command_confirm_unrecorded_republished() {
 
 scenario_command_consumer_commit_before_ack() {
   echo "== the storefront commits a command and loses its broker connection before the ack =="
-  local order command restarted
+  local order command
   order="$(new_order)"
   until_ok 60 projected_is "$order" "1 created" || fail "order $order was never projected"
   hold_on sf_sql "INSERT ON orders_commandinbox" "true"
   lock db "$SF_BOOT" storefront
   until_ok 30 lock_held sf_sql || fail "the holder never took the lock"
-  restarted="$(restarts commands-consumer)"
   command="$(command_for "$order" created confirmed)"
   until_ok 60 waiting sf_sql 'INSERT INTO "orders_commandinbox"' || fail "the command consumer never reached the inbox write"
   drop_broker_connection commands-consumer broker_storefront
+  catch db "$SF_BOOT" storefront orders_commandinbox
   unlock sf_sql
+  until_ok 60 caught sf_sql || fail "the held transaction never finished"
+  expect "the order after the commit" confirmed "$(sf_status "$order")"
+  until_ok 120 read_waiting sf_sql orders_commandinbox "$command" || fail "command $command was never delivered again"
+  release_catch sf_sql
   hold_off sf_sql orders_commandinbox
-  until_true 60 '[ "$(applied_inbox "$command")" = 1 ]' || fail "the held transaction never committed"
-  until_ok 120 command_replayed "$restarted" || fail "the unacknowledged command was never delivered again"
+  until_true 60 '[ "$(depth storefront commands.orders)" = 0 ]' || fail "the redelivered command was never acknowledged"
   until_ok 120 command_status_is "$command" succeeded || fail "the command never closed: $(command_status "$command")"
   expect "storefront inbox rows" 1 "$(applied_inbox "$command")"
   expect "outcome events" 1 "$(outcomes "$command")"
   expect "the status history" 2 "$(history "$order")"
   expect "the projection dead letters" 0 "$(depth operations operations.projection.dlq)"
   expect "the command dead letters" 0 "$(depth storefront commands.orders.dlq)"
-  ok "a command committed before a lost ack is delivered again and replays its outcome"
-}
-command_replayed() {  # command_replayed <restarts before>: the replay count of the process that saw the redelivery
-  [ "$(restarts commands-consumer)" != "$1" ] || return 1
-  [ "$(replayed)" -ge 1 ]
+  ok "a command committed before a lost ack comes back by its own command id and replays its recorded outcome"
 }
 
 expire() {  # expire <command>: its deadline passed, the clock is moved instead of waited for
@@ -666,7 +680,7 @@ scenario_broker_outage() {
     expect "$service running" true "$(docker inspect -f '{{.State.Running}}' "$(dc ps -q "$service")")"
   done
   expect "the projection dead letters" 0 "$(depth operations operations.projection.dlq)"
-  ok "after the outage every order event is delivered once and the command waits as dispatch_failed"
+  ok "after the outage the effect of every order event is applied once and the command waits as dispatch_failed"
 }
 
 # long: the bridge and the consumer killed in the middle of a burst; docker kill alone would count as a manual stop
