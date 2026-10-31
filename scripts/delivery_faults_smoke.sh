@@ -111,6 +111,9 @@ mq() { dc exec -T -u rabbitmq rabbitmq rabbitmqctl -q "$@"; }
 depth() {  # depth <vhost> <queue>
   mq list_queues --no-table-headers -p "$1" name messages | awk -v q="$2" '$1 == q { print $2 }'
 }
+consumers() {  # consumers <vhost> <queue>
+  mq list_queues --no-table-headers -p "$1" name consumers | awk -v q="$2" '$1 == q { print $2 }'
+}
 metric() {  # metric <service> <port> <name> [label fragment...]: the sum of the matching samples
   dc exec -T "$1" python -c "
 import sys, time, urllib.request
@@ -659,22 +662,43 @@ scenario_planned_stop() {
   ok "each delivery process stops on sigterm at once and delivery resumes after the start"
 }
 
+bridge_records() {  # bridge_records <event> <message prefix>: what the bridge logged for that event
+  docker logs "$(dc ps -q operations-bridge)" 2>&1 | grep -F "\"event_id\": \"$1\"" | grep -F "\"message\": \"$2" || true
+}
+
 scenario_bridge_publish_lost() {
   echo "== the bridge loses its connection to operations right before it publishes =="
-  local order event since
+  local order event failed waited
   order="$(new_order)"
   until_ok 60 projected_is "$order" "1 created" || fail "order $order was never projected"
-  drop_vhost_connection operations_bridge operations
-  since="$(date +%s)"
+  # the holder keeps the event while the bridge starts, so the connection is dropped right before the bridge gets it;
+  # a failure another message used up fails the checks by event id below
+  stop_only operations-bridge
   move "$order" confirmed
   event="$(event_of "$order" 2)"
+  until_true 30 '[ "$(depth storefront operations.bridge.storefront)" = 1 ]' \
+    || fail "the status change of order $order never reached the bridge queue"
+  hold_bridge_head
+  until_ok 30 holder_says "holding order.status_changed" \
+    || fail "the holder did not take the status change: $(docker logs "$HOLDER" 2>&1)"
+  start_only operations-bridge
+  # the bridge opens its publish connection before it consumes
+  until_true 60 '[ "$(consumers storefront operations.bridge.storefront)" = 1 ]' || fail "the bridge never started consuming"
+  drop_vhost_connection operations_bridge operations
+  let_go
   until_ok 60 projected_is "$order" "2 confirmed" || fail "the event never got past the bridge: $(projected "$order")"
-  docker logs --since "$since" "$(dc ps -q operations-bridge)" 2>&1 | grep -q "bridge publish failed" \
-    || fail "the bridge never failed the publish, the retry queue was not exercised"
+  failed="$(bridge_records "$event" "bridge publish failed")"
+  expect "failed publishes of $event" 1 "$(grep -c . <<<"$failed" || true)"
+  # requeueing the original, the dead letters and an unroutable retry each log their own record
+  [ -z "$(bridge_records "$event" "bridge retr")" ] || fail "$event left the retry path: $(bridge_records "$event" "bridge retr")"
+  # the retry queue holds a message for 5 seconds, an original given back to the bridge queue returns at once
+  waited="$(ops_sql -c "SELECT received_at - '$(sed -n 's/^{"ts": "\([^"]*\)".*/\1/p' <<<"$failed")'::timestamptz
+                        >= interval '4 seconds' FROM operations_inboxevent WHERE event_id = '$event'")"
+  expect "$event applied after the retry delay" t "$waited"
   expect "inbox rows of the event" 1 "$(inbox_count "$event")"
   expect "the bridge dead letters" 0 "$(depth storefront operations.bridge.storefront.dlq)"
   expect "the projection dead letters" 0 "$(depth operations operations.projection.dlq)"
-  ok "an event the bridge failed to publish goes through its retry queue and its effect is applied once"
+  ok "the event whose publish failed waits out the bridge retry queue and its effect is applied once"
 }
 
 scenario_bridge_publish_refused() {
