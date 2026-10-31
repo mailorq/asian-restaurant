@@ -169,6 +169,10 @@ catch() {  # catch <db service> <user> <database> <table>
   dc exec -d "$1" psql -X -q -U "$2" -d "$3" -c "SET application_name = 'faults_catcher'" -c "BEGIN" \
     -c "LOCK TABLE $4 IN ACCESS EXCLUSIVE MODE" -c "SELECT pg_sleep(900)"
 }
+catch_queued() {  # catch_queued <sql fn>: the catcher waits for its table behind the held transaction
+  [ "$("$1" -c "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'faults_catcher'
+                AND wait_event_type = 'Lock' AND query LIKE 'LOCK TABLE%'")" = 1 ]
+}
 caught() {  # caught <sql fn>: the catcher holds its table, so the transaction it queued behind has ended
   [ "$("$1" -c "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid)
                 WHERE a.application_name = 'faults_catcher' AND l.locktype = 'relation'
@@ -188,6 +192,12 @@ drop_broker_connection() {  # drop_broker_connection <service> <network>
   address="$(docker inspect -f "{{(index .NetworkSettings.Networks \"${PROJ}_$2\").IPAddress}}" "$(dc ps -q "$1")")"
   pid="$(mq list_connections --no-table-headers pid peer_host | awk -v a="$address" '$2 == a { print $1 }')"
   [ -n "$pid" ] || fail "no broker connection of $1 from $address"
+  for p in $pid; do mq close_connection "$p" "faults: connection dropped by the test" >/dev/null; done
+}
+drop_vhost_connection() {  # drop_vhost_connection <user> <vhost>: the connections of that user to that vhost only
+  local pid
+  pid="$(mq list_connections --no-table-headers pid user vhost | awk -v u="$1" -v v="$2" '$2 == u && $3 == v { print $1 }')"
+  [ -n "$pid" ] || fail "no connection of $1 to $2"
   for p in $pid; do mq close_connection "$p" "faults: connection dropped by the test" >/dev/null; done
 }
 
@@ -425,6 +435,7 @@ scenario_consumer_commit_before_ack() {
   event="$(event_of "$order" 2)"
   drop_broker_connection operations-consumer broker_operations
   catch operations-db "$OPS_BOOT" operations operations_inboxevent
+  until_ok 30 catch_queued ops_sql || fail "the catcher never queued for the inbox table"
   # the transaction is let through: it commits after the connection that would carry the ack is gone
   unlock ops_sql
   until_ok 60 caught ops_sql || fail "the held transaction never finished"
@@ -517,6 +528,7 @@ scenario_command_consumer_commit_before_ack() {
   until_ok 60 waiting sf_sql 'INSERT INTO "orders_commandinbox"' || fail "the command consumer never reached the inbox write"
   drop_broker_connection commands-consumer broker_storefront
   catch db "$SF_BOOT" storefront orders_commandinbox
+  until_ok 30 catch_queued sf_sql || fail "the catcher never queued for the inbox table"
   unlock sf_sql
   until_ok 60 caught sf_sql || fail "the held transaction never finished"
   expect "the order after the commit" confirmed "$(sf_status "$order")"
@@ -645,6 +657,67 @@ scenario_planned_stop() {
   command="$(command_for "$order" created confirmed)"
   until_ok 120 command_status_is "$command" succeeded || fail "the command after the stops ended $(command_status "$command")"
   ok "each delivery process stops on sigterm at once and delivery resumes after the start"
+}
+
+scenario_bridge_publish_lost() {
+  echo "== the bridge loses its connection to operations right before it publishes =="
+  local order event since
+  order="$(new_order)"
+  until_ok 60 projected_is "$order" "1 created" || fail "order $order was never projected"
+  drop_vhost_connection operations_bridge operations
+  since="$(date +%s)"
+  move "$order" confirmed
+  event="$(event_of "$order" 2)"
+  until_ok 60 projected_is "$order" "2 confirmed" || fail "the event never got past the bridge: $(projected "$order")"
+  docker logs --since "$since" "$(dc ps -q operations-bridge)" 2>&1 | grep -q "bridge publish failed" \
+    || fail "the bridge never failed the publish, the retry queue was not exercised"
+  expect "inbox rows of the event" 1 "$(inbox_count "$event")"
+  expect "the bridge dead letters" 0 "$(depth storefront operations.bridge.storefront.dlq)"
+  expect "the projection dead letters" 0 "$(depth operations operations.projection.dlq)"
+  ok "an event the bridge failed to publish goes through its retry queue and its effect is applied once"
+}
+
+scenario_bridge_publish_refused() {
+  echo "== the bridge refused by operations past its retry budget, then an operator replay =="
+  local order event
+  order="$(new_order)"
+  until_ok 60 projected_is "$order" "1 created" || fail "order $order was never projected"
+  # a channel keeps the rights it was checked with, so the connection goes with the right to write
+  mq set_permissions -p operations operations_bridge '^operations\.events$' '^$' '^$'
+  drop_vhost_connection operations_bridge operations
+  move "$order" confirmed
+  event="$(event_of "$order" 2)"
+  until_true 120 '[ "$(depth storefront operations.bridge.storefront.dlq)" = 1 ]' \
+    || fail "the refused event never reached the bridge dead letters"
+  expect "the projection while the event is dead lettered" "1 created" "$(projected "$order")"
+  dc --profile provision run --rm rabbitmq-provision >/dev/null 2>&1 || fail "rabbitmq-provision did not restore the rights"
+  dc exec -T operations-bridge python manage.py dlq --queue bridge --list >/dev/null
+  expect "the bridge dead letters after a listing" 1 "$(depth storefront operations.bridge.storefront.dlq)"
+  dc exec -T operations-bridge python manage.py dlq --queue bridge --replay 1 --operator faults >/dev/null
+  until_ok 60 projected_is "$order" "2 confirmed" || fail "the replayed event was not applied: $(projected "$order")"
+  expect "the bridge dead letters after the replay" 0 "$(depth storefront operations.bridge.storefront.dlq)"
+  expect "inbox rows of the event" 1 "$(inbox_count "$event")"
+  expect "the projection dead letters" 0 "$(depth operations operations.projection.dlq)"
+  ok "an event the bridge could not publish within its budget waits in its dead letters and the operator replay applies it once"
+}
+
+# long: the deadline of a command is five minutes after it was created and travels in its envelope, so it is waited for
+scenario_command_expired_in_transit() {
+  echo "== a command that waits in the broker past its deadline =="
+  local order command
+  order="$(new_order)"
+  until_ok 60 projected_is "$order" "1 created" || fail "order $order was never projected"
+  stop_only commands-consumer
+  command="$(command_for "$order" created confirmed)"
+  until_ok 60 command_status_is "$command" dispatched || fail "the command was never dispatched"
+  until_ok 420 command_status_is "$command" timed_out || fail "the command never timed out: $(command_status "$command")"
+  start_only commands-consumer
+  until_ok 120 command_status_is "$command" rejected || fail "the late command ended $(command_status "$command")"
+  expect "the reason" command_expired "$(result_code "$command")"
+  expect "the order" created "$(sf_status "$order")"
+  expect "storefront inbox rows" 1 "$(applied_inbox "$command")"
+  expect "outcome events" 1 "$(outcomes "$command")"
+  ok "a command delivered after its deadline is refused by the storefront and closes as rejected"
 }
 
 # long: the broker away for longer than the relay backoff reaches, while orders move and a command waits
@@ -790,8 +863,11 @@ main() {
   scenario_command_timed_out_then_outcome
   scenario_command_dispatch_failed
   scenario_command_dead_letter
+  scenario_bridge_publish_lost
+  scenario_bridge_publish_refused
   scenario_planned_stop
   if [ "$long" = 1 ]; then
+    scenario_command_expired_in_transit
     scenario_broker_outage
     scenario_crash_in_burst
   fi
