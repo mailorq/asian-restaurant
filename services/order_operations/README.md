@@ -39,7 +39,7 @@ Bridge переводит события storefront (ключи `order.*`) в в
 | `resolve_command` | закрывает `timed_out` или `dispatch_failed` по решению оператора ([ADR-0001](../../packages/event_contracts/docs/ADR-0001-order-transition-command-plane.md)) |
 | `sweep_commands` | тот же проход по просроченным командам, что периодически делает `commands-relay` |
 | `reconcile` | сверяет проекции с завершенным снимком в обе стороны |
-| `dlq` | просмотр, повтор и удаление сообщений из dead-letter очереди |
+| `dlq` | просмотр, повтор и удаление сообщений из dead-letter очереди проекций, с `--queue bridge` из очереди bridge (запуск в operations-bridge) |
 | `publish_test_event` | проверочное `order.created` в `operations.events` |
 
 ## Изоляция сообщений

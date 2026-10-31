@@ -88,7 +88,8 @@ Both DLQ alerts have a matching operator action; neither tool consumes anything 
 | queue | command |
 |---|---|
 | `commands.orders.dlq`, and `orders.ops.dlq` where the legacy consumer runs (dev only) | `backend: manage.py dlq <queue> --list \| --replay N \| --drop N --yes --reason ...` |
-| `operations.projection.dlq` | `operations: manage.py dlq --list \| --replay N \| --drop N --yes --reason ...` |
+| `operations.projection.dlq` | `operations-consumer: manage.py dlq --list \| --replay N \| --drop N --yes --reason ...` |
+| `operations.bridge.storefront.dlq` | `operations-bridge: manage.py dlq --queue bridge --list \| --replay N \| --drop N --yes --reason ...` |
 
 Listing prints identity only - event type, reason, message id, payload sha256 and size - because
 a dead-lettered order event carries a customer phone and address, and an operator tool must not

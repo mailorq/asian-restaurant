@@ -482,7 +482,9 @@ geocoder. У остальных сервисов маршрута из сете�
 правило на хосте или прокси с белым списком, это условие площадки.
 
 Операторские команды, которым нужен брокер, запускаются там, где он есть: на стороне storefront в backend,
-на стороне Operations в operations-consumer (например, `dc exec operations-consumer python manage.py dlq`).
+на стороне Operations в operations-consumer (например, `dc exec operations-consumer python manage.py dlq`),
+а очереди bridge лежат на vhost storefront и доступны только из operations-bridge
+(`dc exec operations-bridge python manage.py dlq --queue bridge`).
 
 Проверка модели идет на локальном изолированном стенде (`scripts/stack_smoke.sh`): из контейнеров проверяются
 нужные и запрещенные соединения и наличие маршрута наружу, geocoder заменен локальной заглушкой. Это проверка
