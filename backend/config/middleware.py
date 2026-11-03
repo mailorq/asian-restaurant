@@ -39,8 +39,8 @@ class ApiWriteGuard:
         return _refusal(request) or await self.get_response(request)
 
 
-# the endpoints that find out or deliberately change who is signed in; logout and the employee token act
-# for the signed-in account and are checked like everything else
+# the endpoints that find out or deliberately change who is signed in; logout acts for the signed-in account
+# and is checked like everything else
 IDENTITY_PATHS = frozenset(
     {
         "/api/auth/me",

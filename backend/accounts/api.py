@@ -145,12 +145,3 @@ def csrf(request):
 def jwks(request):
     return jwt_service.public_jwks()
 
-
-@router.post("/employee-token", auth=django_auth)
-def employee_token(request):
-    # a signed-in active staff member exchanges the session for a short-lived operations JWT
-    try:
-        token, ttl = jwt_service.issue_employee_token(request.user)
-    except jwt_service.NotAuthorized as exc:
-        raise HttpError(403, "Недостаточно прав") from exc
-    return {"token": token, "token_type": "Bearer", "expires_in": ttl}

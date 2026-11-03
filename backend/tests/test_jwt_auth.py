@@ -49,19 +49,10 @@ def test_jwks_is_public_and_matches_signing_key(signing, api):
     assert key["kty"] == "RSA" and key["use"] == "sig" and key["kid"]
 
 
-def test_employee_token_endpoint_authorization(signing, api, user, employee_user):
-    assert api.post("/api/auth/employee-token").status_code == 401  # anonymous
-
-    api.force_login(user)
-    assert api.post("/api/auth/employee-token").status_code == 403  # customer, not staff
-
+def test_no_public_endpoint_hands_a_staff_token_to_the_browser(signing, api, employee_user):
+    # the panel reaches operations only through the storefront, which issues the token per call
     api.force_login(employee_user)
-    resp = api.post("/api/auth/employee-token")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["token_type"] == "Bearer" and body["expires_in"] == 600
-    claims = _decode(body["token"], signing.public_key())
-    assert "restaurant_manager" in claims["roles"]
+    assert api.post("/api/auth/employee-token").status_code == 404
 
 
 def _pem_text(key):

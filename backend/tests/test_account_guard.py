@@ -84,10 +84,9 @@ def test_a_tab_showing_one_account_reads_nothing_of_another(user, other, path):
     assert read.status_code == 409 and read.json()["code"] == "account_changed"
 
 
-def test_logout_and_the_employee_token_act_only_for_the_account_the_tab_shows(user, other):
+def test_logout_acts_only_for_the_account_the_tab_shows(user, other):
     browser = _browser(user, other)
     assert _send(browser, "post", "/api/auth/logout", str(user.pk), {}).status_code == 409
-    assert _send(browser, "post", "/api/auth/employee-token", str(user.pk), {}).status_code == 409
     me = _send(browser, "get", "/api/auth/me")
     assert me.status_code == 200 and me.json()["id"] == other.pk
 

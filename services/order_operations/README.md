@@ -79,9 +79,8 @@ Bridge надежен: проверяет каждый сконвертиров�
 Storefront остается единственным владельцем штатной роли сотрудника (`restaurant_operator` или
 `restaurant_manager`), Operations не читает `auth_user` и группы. BFF storefront выпускает на каждый вызов
 короткоживущий JWT с подписью RS256 (`sub`, `roles`, `authz_version`, `jti`, `exp`, `iss=identity`,
-`aud=operations`). Тот же токен вошедший сотрудник может получить сам через `POST /api/auth/employee-token`.
-`EmployeeJWTAuth` проверяет подпись по JWKS storefront (`GET /api/auth/jwks`) и требует штатную роль, которую
-подтверждает и локальная проекция прав. Автор берется из проверенного токена, а `actor_id` в теле запроса
+`aud=operations`); в браузер он не попадает. `EmployeeJWTAuth` проверяет подпись по JWKS storefront
+(`GET /api/auth/jwks`) и требует штатную роль, которую подтверждает и локальная проекция прав. Автор берется из проверенного токена, а `actor_id` в теле запроса
 игнорируется. `/ops-api/*` открыт только сотрудникам, без авторизации доступен лишь `/health`, а OpenAPI-схема
 отдается только вне production.
 

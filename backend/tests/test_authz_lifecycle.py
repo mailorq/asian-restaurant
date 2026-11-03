@@ -168,17 +168,16 @@ def test_backfill_emits_authz_for_superuser(superuser):
 
 
 # CSRF on session-authenticated POSTs
-def test_employee_token_and_logout_enforce_csrf(employee_user):
+def test_logout_enforces_csrf(employee_user):
     csrf_client = Client(enforce_csrf_checks=True)
     csrf_client.force_login(employee_user)
-    assert csrf_client.post("/api/auth/employee-token").status_code == 403
     assert csrf_client.post("/api/auth/logout").status_code == 403
 
 
-def test_employee_token_works_with_csrf(employee_user):
+def test_logout_works_with_csrf(employee_user):
     csrf_client = Client(enforce_csrf_checks=True)
     csrf_client.force_login(employee_user)
     csrf_client.get("/api/auth/csrf")
     token = csrf_client.cookies["csrftoken"].value
-    resp = csrf_client.post("/api/auth/employee-token", content_type="application/json", HTTP_X_CSRFTOKEN=token)
-    assert resp.status_code == 200 and resp.json()["token"]
+    resp = csrf_client.post("/api/auth/logout", content_type="application/json", HTTP_X_CSRFTOKEN=token)
+    assert resp.status_code == 200
