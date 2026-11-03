@@ -14,8 +14,9 @@ def has_operations_role(user) -> bool:
 
 
 class User(AbstractUser):
-    # phone stored normalized to E.164, e.g. +380671234567
-    phone = models.CharField(max_length=16, unique=True, blank=True, null=True)
+    # the contact for an order, normalized to E.164, e.g. +380671234567; unconfirmed, so it identifies nobody
+    # and two accounts may give the same one
+    phone = models.CharField(max_length=16, blank=True)
     # initial state is v1; bumped on name/phone change so the projection can version-fence
     customer_version = models.PositiveIntegerField(default=1)
     # bumped to revoke outstanding staff tokens ahead of their TTL
@@ -49,26 +50,3 @@ class EmployeeRoleAudit(models.Model):
 
     def __str__(self) -> str:
         return f"{self.action} → {self.target_id}"
-
-
-class PhoneChallenge(models.Model):
-    """a code sent to a phone, proving whoever registers or recovers an account holds that phone"""
-
-    class Purpose(models.TextChoices):
-        REGISTER = "register", "Регистрация"
-        RESET = "reset", "Восстановление доступа"
-
-    phone = models.CharField(max_length=16)
-    purpose = models.CharField(max_length=16, choices=Purpose.choices)
-    # keyed with the secret key, so the table alone does not give the code away
-    code_hash = models.CharField(max_length=64)
-    attempts = models.PositiveSmallIntegerField(default=0)
-    expires_at = models.DateTimeField()
-    used_at = models.DateTimeField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        indexes = [models.Index(fields=["phone", "purpose", "-created_at"])]
-
-    def __str__(self) -> str:
-        return f"{self.purpose} {self.phone}"

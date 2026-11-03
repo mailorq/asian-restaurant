@@ -229,7 +229,7 @@ def upload(product):
     print(json.dumps(problems))
 
 
-def command_plane(order_id, phone):
+def command_plane(order_id, login):
     """one status change from the employee panel, through operations, the broker and the storefront, back as an outcome"""
     panel = Session()
     panel.send("GET", "/api/auth/csrf")
@@ -247,7 +247,7 @@ def command_plane(order_id, phone):
 
     password = os.environ["SMOKE_EMPLOYEE_PASSWORD"]
     status, _, _ = call(
-        "POST", "/api/auth/login", {"phone": phone, "password": password}
+        "POST", "/api/auth/login", {"login": login, "password": password}
     )
     if status != 200:
         raise SystemExit(json.dumps([f"the employee login answered {status}"]))
@@ -290,7 +290,7 @@ def command_plane(order_id, phone):
     print(json.dumps(problems))
 
 
-def send_command(order_id, phone, watch):
+def send_command(order_id, login, watch):
     """one new command on an order in created, watched for up to watch seconds; prints the answer and what it went through"""
     panel = Session()
     panel.send("GET", "/api/auth/csrf")
@@ -309,7 +309,7 @@ def send_command(order_id, phone, watch):
     call(
         "POST",
         "/api/auth/login",
-        {"phone": phone, "password": os.environ["SMOKE_EMPLOYEE_PASSWORD"]},
+        {"login": login, "password": os.environ["SMOKE_EMPLOYEE_PASSWORD"]},
     )
     intent = {
         "expected_status": "created",

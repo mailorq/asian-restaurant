@@ -101,7 +101,7 @@ def test_the_endpoints_that_find_out_or_change_who_is_signed_in_answer_any_tab(u
         "post",
         "/api/auth/login",
         str(other.pk),
-        {"phone": user.phone, "password": "Pass!2345"},
+        {"login": user.username, "password": "Pass!2345"},
     )
     assert signed.status_code == 200 and signed.json()["id"] == user.pk
 

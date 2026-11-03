@@ -49,16 +49,10 @@ class CustomerChangeForm(RenderedValuesForm, UserChangeForm):
     def clean_phone(self):
         raw = self.cleaned_data.get("phone")
         if not raw:
-            if self.instance.pk and self.instance.username == self.instance.phone:
-                raise forms.ValidationError(
-                    "Телефон служит логином этого аккаунта, очистить его нельзя"
-                )
             return raw
         number = to_e164(raw)
         if number is None:
             raise forms.ValidationError("Некорректный номер телефона")
-        if accounts_service.phone_owner(number, excluding=self.instance.pk) is not None:
-            raise forms.ValidationError("Этот номер уже принадлежит другому аккаунту")
         return number
 
 
@@ -71,13 +65,6 @@ class CustomUserAdmin(UserAdmin):
     # the admin opens only to superusers and the employee api checks roles, so is_staff and model permissions
     # grant nothing; editable here they would only change silently, outside the role services
     readonly_fields = ("customer_version", "authz_version", "is_staff", "user_permissions")
-
-    def get_readonly_fields(self, request, obj=None):
-        fields = super().get_readonly_fields(request, obj)
-        # an account whose login is its number moves the login only together with the phone
-        if obj is not None and obj.username == obj.phone:
-            return (*fields, "username")
-        return fields
 
     def formfield_for_manytomany(self, db_field, request, **kwargs):
         # staff roles are not editable here; they change only through set_staff_role
@@ -100,8 +87,6 @@ class CustomUserAdmin(UserAdmin):
         edited = set(form.changed_data)
         user = User.objects.select_for_update().get(pk=obj.pk)
         plain = edited & (_ROW_FIELDS - _PROFILE_FIELDS - _ACCESS_FIELDS)
-        if user.username == user.phone:
-            plain.discard("username")
         if plain:
             for name in plain:
                 setattr(user, name, getattr(obj, name))

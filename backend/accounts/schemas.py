@@ -3,30 +3,21 @@ from ninja import Field, Schema
 from employee.permissions import is_employee
 
 
-class PhoneIn(Schema):
-    phone: str
-
-
 class RegisterIn(Schema):
-    phone: str
+    login: str = Field(max_length=150)
     password: str
     name: str = Field(min_length=1, max_length=150)
-    code: str = Field(min_length=1, max_length=12)
-
-
-class ResetIn(Schema):
-    phone: str
-    code: str = Field(min_length=1, max_length=12)
-    password: str
+    phone: str = Field(max_length=32)
 
 
 class LoginIn(Schema):
-    phone: str
+    login: str = Field(max_length=150)
     password: str
 
 
 class UserOut(Schema):
     id: int
+    login: str = ""
     phone: str | None = None
     name: str = ""
     is_employee: bool = False
@@ -34,6 +25,10 @@ class UserOut(Schema):
     # the panel hides tabs it cannot use; the server still refuses them either way
     staff_role: str | None = None
     transitions_via_commands: bool = False
+
+    @staticmethod
+    def resolve_login(obj) -> str:
+        return obj.username
 
     @staticmethod
     def resolve_name(obj) -> str:

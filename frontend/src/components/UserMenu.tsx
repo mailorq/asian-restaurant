@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "./Icon";
 import { useAuth } from "../stores/auth";
-import { formatUaPhone } from "../lib/phone";
 
 export function UserMenu() {
   const user = useAuth((s) => s.user);
@@ -24,7 +23,7 @@ export function UserMenu() {
   }, [open]);
 
   if (!user) return null;
-  const label = user.name || formatUaPhone(user.phone ?? "");
+  const label = user.name || user.login;
 
   return (
     <div
@@ -57,9 +56,7 @@ export function UserMenu() {
           >
             <div className="px-3 py-2">
               <p className="truncate text-sm font-medium">{label}</p>
-              {user.name && user.phone && (
-                <p className="tnum truncate text-xs text-muted">{formatUaPhone(user.phone)}</p>
-              )}
+              {user.name && <p className="truncate text-xs text-muted">{user.login}</p>}
             </div>
             <div className="my-1 h-px bg-border" />
             <button

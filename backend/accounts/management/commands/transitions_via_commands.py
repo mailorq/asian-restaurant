@@ -6,7 +6,7 @@ class Command(BaseCommand):
     help = "switch employees to order transitions through operations commands, or back with --off"
 
     def add_arguments(self, parser) -> None:
-        parser.add_argument("usernames", nargs="+", help="username / phone of each employee")
+        parser.add_argument("usernames", nargs="+", help="login of each employee")
         parser.add_argument("--off", action="store_true", help="back to the direct transition")
 
     def handle(self, *args, **options) -> None:

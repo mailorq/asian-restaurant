@@ -8,7 +8,7 @@ class Command(BaseCommand):
     help = "assign or clear a staff role for a user (server access = superuser)."
 
     def add_arguments(self, parser) -> None:
-        parser.add_argument("username", help="username / phone of the target user")
+        parser.add_argument("username", help="login of the target user")
         parser.add_argument("--role", choices=sorted(StaffRole.values), default=None,
                             help="omit to clear every staff role")
         parser.add_argument("--actor", required=True,

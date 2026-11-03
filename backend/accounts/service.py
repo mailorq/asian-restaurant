@@ -1,10 +1,7 @@
 from django.db import transaction
-from django.db.models import Q
 
-from accounts import challenges
-from accounts.models import PhoneChallenge, User
+from accounts.models import User
 from accounts.phone import to_e164
-from accounts.roles import is_staff_member
 from orders.models import OrderOutbox
 
 CUSTOMER_EVENT = "identity.customer_changed"
@@ -32,38 +29,6 @@ class InvalidPhone(ValueError):
     pass
 
 
-class PhoneTaken(ValueError):
-    pass
-
-
-def phone_owner(number: str, *, excluding: int | None = None) -> User | None:
-    # a number belongs to whoever has it as a phone or logs in with it
-    return User.objects.exclude(pk=excluding).filter(Q(phone=number) | Q(username=number)).first()
-
-
-def recoverable_by_sms(user: User | None) -> bool:
-    # a staff account is not handed over to whoever holds its phone: an administrator resets it
-    return bool(
-        user and user.is_active and not (user.is_staff or user.is_superuser or is_staff_member(user))
-    )
-
-
-def reset_password_with_code(number: str, code: str, password: str) -> User | None:
-    """the customer holding the number gets the password, once per live recovery code, else None"""
-    owner = phone_owner(number)
-    with transaction.atomic():
-        # the row a role grant, a deactivation and a phone change lock first: whichever of them committed
-        # before this is what the account is judged by, and none of them lands between the judgement and the write
-        user = User.objects.select_for_update().filter(pk=owner.pk).first() if owner else None
-        spent = challenges.consume(number, PhoneChallenge.Purpose.RESET, code)
-        if not (spent and recoverable_by_sms(user) and number in (user.phone, user.username)):
-            # returned, not raised: the try just counted commits with the rest
-            return None
-        user.set_password(password)
-        user.save(update_fields=["password"])
-    return user
-
-
 @transaction.atomic
 def set_customer_profile(user_id: int, *, name: str | None = None, phone: str | None = None) -> User | None:
     user = User.objects.select_for_update().filter(id=user_id).first()
@@ -74,16 +39,12 @@ def set_customer_profile(user_id: int, *, name: str | None = None, phone: str | 
         user.first_name = name
         changed.add("first_name")
     if phone is not None:
-        number = to_e164(phone)
+        # an empty value clears the contact
+        number = to_e164(phone) if phone else ""
         if number is None:
             raise InvalidPhone(phone)
+        # a contact for the courier: the login stays where it is, even one that was this number
         if number != user.phone:
-            if phone_owner(number, excluding=user.pk) is not None:
-                raise PhoneTaken(number)
-            # a customer logs in with the number, so the login moves with it
-            if user.username == user.phone:
-                user.username = number
-                changed.add("username")
             user.phone = number
             changed.add("phone")
     if changed:

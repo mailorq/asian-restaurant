@@ -60,7 +60,7 @@ def test_only_the_internal_endpoints_skip_the_https_redirect(client, settings):
 def test_two_clients_behind_the_ingress_get_their_own_rate_limit_bucket(client, settings):
     settings.RATELIMIT_TRUST_XFF = True
     cache.clear()
-    body = {"phone": "+79990000001", "password": "wrong-on-purpose"}
+    body = {"login": "+79990000001", "password": "wrong-on-purpose"}
 
     def attempt(client_ip):
         return client.post(

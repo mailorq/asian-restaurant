@@ -112,13 +112,12 @@ Storefront - это `backend` (API, админка и BFF панели сотр�
 | `restaurant_manager` | доступ оператора, склад и данные покупателей |
 | суперпользователь | все, и только он выдает штатные роли |
 
-- Покупатель регистрируется по коду из SMS: `POST /api/auth/register/code` отправляет код, `POST /api/auth/register`
-  создает аккаунт только с ним. Код живет 10 минут и дает 5 попыток, хранится только его HMAC. Номер получает
-  новый код не чаще раза в минуту и не больше 5 раз в сутки, регистрация и восстановление делят эти лимиты, а
-  неудачная отправка их не возвращает. Ответ и лимиты одинаковы для свободного и занятого номера,
-  владельцу занятого приходит SMS о попытке. Пароль восстанавливается так же, через `/api/auth/password/code` и
-  `/api/auth/password/reset`, и остальные сессии аккаунта при этом заканчиваются. Аккаунт сотрудника по SMS не
-  восстанавливается, его пароль меняет администратор (`manage.py changepassword`).
+- Покупатель регистрируется с логином и паролем (`POST /api/auth/register`) и входит по логину
+  (`POST /api/auth/login`). Логин уникален без учета регистра и начинается с латинской буквы, поэтому не похож
+  на номер телефона. Телефон из регистрации только контакт для курьера: его никто не подтверждает, он не дает
+  входа и может совпадать у разных аккаунтов. Аккаунт, созданный до логинов, входит по номеру, с которым
+  регистрировался, в любом формате записи; смена контактного телефона логин не трогает. Самостоятельного
+  восстановления пароля нет, пароль меняет администратор (в админке или `manage.py changepassword`).
 - Сотрудник держит ровно одну роль: две группы сразу закрывают доступ, а не расширяют его. `is_staff` сам по
   себе ничего не дает. Каждое изменение роли пишется в `EmployeeRoleAudit`.
 - Django admin открывается только активному суперпользователю: страницы, действия и прямые адреса. `is_staff`
@@ -161,16 +160,15 @@ docker compose exec backend python manage.py seed_menu
 docker compose exec backend python manage.py seed_initial_stock --confirm --quantity 50
 
 # суперпользователь, который выдает штатные роли
-docker compose exec backend python manage.py createsuperuser --username +380671112244
+docker compose exec backend python manage.py createsuperuser --username admin
 ```
 
-Сотрудник регистрируется на сайте как покупатель, здесь с телефоном `+380671112233`, и получает роль. Код из
-SMS в dev не отправляется, а пишется в лог backend: `docker compose logs backend | grep "sms to"`.
+Сотрудник регистрируется на сайте как покупатель, здесь с логином `kitchen_lead`, и получает роль:
 
 ```bash
-docker compose exec backend python manage.py grant_employee +380671112233 --role restaurant_manager --actor +380671112244
+docker compose exec backend python manage.py grant_employee kitchen_lead --role restaurant_manager --actor admin
 # по желанию: перевести его на командный контур
-docker compose exec backend python manage.py transitions_via_commands +380671112233
+docker compose exec backend python manage.py transitions_via_commands kitchen_lead
 ```
 
 | Что | Где |

@@ -139,12 +139,6 @@ def _is_placeholder(value: str) -> bool:
 
 DJANGO_PRODUCTION = env.bool("DJANGO_PRODUCTION", default=False)
 
-# where confirmation codes go: the log in development, nowhere in production until a provider is chosen,
-# so registration and recovery answer 503 there rather than skip the phone
-SMS_BACKEND = env("SMS_BACKEND", default="") or (
-    "accounts.sms.DisabledSender" if DJANGO_PRODUCTION else "accounts.sms.ConsoleSender"
-)
-
 if DJANGO_PRODUCTION:
     import os
 
@@ -185,9 +179,6 @@ if DJANGO_PRODUCTION:
             _previous = fh.read().decode()
     if _previous and is_published(load_pem_public_key(_previous.encode())):
         raise ImproperlyConfigured("the previous signing key is published in the repository history, drop it")
-    # the console backend writes every code into the log, where anyone who reads it could confirm a phone
-    if SMS_BACKEND == "accounts.sms.ConsoleSender":
-        raise ImproperlyConfigured("SMS_BACKEND must not write codes to the log in production")
 
 AUTH_USER_MODEL = "accounts.User"
 

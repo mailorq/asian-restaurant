@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { Modal } from "./Modal";
 import { Icon } from "./Icon";
 import { useUI } from "../stores/ui";
@@ -11,10 +11,12 @@ function Field({
   label,
   children,
   required,
+  hint,
 }: {
   label: string;
   children: React.ReactNode;
   required?: boolean;
+  hint?: string;
 }) {
   return (
     <label className="block">
@@ -23,6 +25,7 @@ function Field({
         {required && <span className="text-accent"> *</span>}
       </span>
       {children}
+      {hint && <span className="mt-1.5 block text-xs text-muted">{hint}</span>}
     </label>
   );
 }
@@ -31,53 +34,43 @@ function Spinner() {
   return <span aria-hidden className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />;
 }
 
-// the server lets a phone have a new code a minute after the previous one
-const RESEND_SECONDS = 60;
-
-type Mode = "login" | "register" | "recover";
+type Mode = "login" | "register";
 
 const TABS = ["login", "register"] as const;
 
+// the server's rule for a new login; it lowercases what was typed first
+const LOGIN = /^[a-z][a-z0-9_.-]{2,31}$/;
+
 export function AuthModal() {
-  const tab = useUI((s) => s.authTab);
-  const setTab = (t: "login" | "register") => useUI.setState({ authTab: t });
+  const mode = useUI((s) => s.authTab);
+  const setTab = (t: Mode) => useUI.setState({ authTab: t });
   const close = useUI((s) => s.closeModal);
   const notify = useToast((s) => s.notify);
   const setUser = useAuth((s) => s.setUser);
 
-  const [recovering, setRecovering] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [login, setLogin] = useState("");
   const [phone, setPhone] = useState("+380 ");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
-  const [code, setCode] = useState("");
-  const [codeSent, setCodeSent] = useState(false);
-  const [resendIn, setResendIn] = useState(0);
+  const [loginError, setLoginError] = useState<string | null>(null);
   const [phoneError, setPhoneError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const mode: Mode = tab === "register" ? "register" : recovering ? "recover" : "login";
   const tabsId = useId();
-  const tabRefs = useRef<Partial<Record<(typeof TABS)[number], HTMLButtonElement | null>>>({});
-
-  useEffect(() => {
-    if (resendIn <= 0) return;
-    const timer = window.setTimeout(() => setResendIn((s) => s - 1), 1000);
-    return () => window.clearTimeout(timer);
-  }, [resendIn]);
+  const tabRefs = useRef<Partial<Record<Mode, HTMLButtonElement | null>>>({});
 
   function switchTo(next: Mode) {
-    setTab(next === "register" ? "register" : "login");
-    setRecovering(next === "recover");
-    setCodeSent(false);
-    setCode("");
+    setTab(next);
+    setLoginError(null);
+    setPhoneError(null);
     setError(null);
   }
 
   // arrows, home and end move between the tabs and choose the one they land on
   function moveTab(e: React.KeyboardEvent<HTMLDivElement>) {
-    const at = TABS.indexOf(tab);
+    const at = TABS.indexOf(mode);
     const to =
       e.key === "ArrowRight"
         ? (at + 1) % TABS.length
@@ -94,68 +87,34 @@ export function AuthModal() {
     tabRefs.current[TABS[to]]?.focus();
   }
 
-  async function run<T>(request: () => Promise<T>): Promise<T | undefined> {
+  async function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (mode === "register") {
+      const loginOk = LOGIN.test(login.trim().toLowerCase());
+      const phoneOk = isValidUaPhone(phone);
+      setLoginError(loginOk ? null : "От 3 до 32 латинских букв, цифр и знаков _ . -, начинается с буквы");
+      setPhoneError(phoneOk ? null : "Введите номер в формате +380 (XX) XXX XX XX");
+      if (!loginOk || !phoneOk) return;
+    }
+    const [path, body, greeting] =
+      mode === "login"
+        ? ["/auth/login", { login, password }, "Вход выполнен"]
+        : ["/auth/register", { login, password, name: name.trim(), phone }, "Добро пожаловать!"];
     setError(null);
     setLoading(true);
     try {
-      return await request();
+      const user = await api<CurrentUser>(path, { method: "POST", body: JSON.stringify(body) });
+      setUser(user);
+      notify(greeting);
+      close();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Что-то пошло не так");
-      return undefined;
     } finally {
       setLoading(false);
     }
   }
 
-  async function requestCode() {
-    if (!isValidUaPhone(phone)) {
-      setPhoneError("Введите номер в формате +380 (XX) XXX XX XX");
-      return;
-    }
-    const path = mode === "register" ? "/auth/register/code" : "/auth/password/code";
-    const sent = await run(() =>
-      api<{ detail: string }>(path, { method: "POST", body: JSON.stringify({ phone }) }),
-    );
-    if (sent) {
-      setCodeSent(true);
-      setResendIn(RESEND_SECONDS);
-      notify(sent.detail);
-    }
-  }
-
-  async function submit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (!isValidUaPhone(phone)) {
-      setPhoneError("Введите номер в формате +380 (XX) XXX XX XX");
-      return;
-    }
-    if (mode !== "login" && !codeSent) {
-      await requestCode();
-      return;
-    }
-    const [path, body, greeting] =
-      mode === "login"
-        ? ["/auth/login", { phone, password }, "Вход выполнен"]
-        : mode === "register"
-          ? ["/auth/register", { phone, password, name: name.trim(), code }, "Добро пожаловать!"]
-          : ["/auth/password/reset", { phone, password, code }, "Пароль изменен, вход выполнен"];
-    const user = await run(() => api<CurrentUser>(path, { method: "POST", body: JSON.stringify(body) }));
-    if (user) {
-      setUser(user);
-      notify(greeting);
-      close();
-    }
-  }
-
-  const title = mode === "login" ? "Вход" : mode === "register" ? "Регистрация" : "Восстановление доступа";
-  const action =
-    mode === "login"
-      ? "Войти"
-      : !codeSent
-        ? "Получить код"
-        : mode === "register"
-          ? "Создать аккаунт"
-          : "Сменить пароль и войти";
+  const title = mode === "login" ? "Вход" : "Регистрация";
 
   return (
     <Modal title={title} onClose={close}>
@@ -169,7 +128,7 @@ export function AuthModal() {
         <span
           aria-hidden
           className={`absolute inset-y-1 left-1 w-[calc(50%-0.25rem)] rounded-full bg-surface shadow-sm transition-transform dark:bg-border duration-[var(--dur)] ease-[var(--ease-out)] ${
-            tab === "register" ? "translate-x-full" : ""
+            mode === "register" ? "translate-x-full" : ""
           }`}
         />
         {TABS.map((t) => (
@@ -180,12 +139,12 @@ export function AuthModal() {
             }}
             id={`${tabsId}-${t}`}
             role="tab"
-            aria-selected={tab === t}
+            aria-selected={mode === t}
             aria-controls={`${tabsId}-panel`}
-            tabIndex={tab === t ? 0 : -1}
+            tabIndex={mode === t ? 0 : -1}
             onClick={() => switchTo(t)}
             className={`relative h-10 rounded-full text-sm font-medium transition-colors ${
-              tab === t ? "text-text" : "text-muted hover:text-text"
+              mode === t ? "text-text" : "text-muted hover:text-text"
             }`}
           >
             {t === "login" ? "Вход" : "Регистрация"}
@@ -197,7 +156,7 @@ export function AuthModal() {
         key={mode}
         id={`${tabsId}-panel`}
         role="tabpanel"
-        aria-labelledby={`${tabsId}-${tab}`}
+        aria-labelledby={`${tabsId}-${mode}`}
         className="anim-fade-up"
       >
         <form onSubmit={submit} className="flex flex-col gap-5">
@@ -216,91 +175,79 @@ export function AuthModal() {
             </Field>
           )}
 
-          <Field label="Телефон" required>
+          <Field label="Логин" required hint={mode === "login" ? "Если регистрировались по номеру телефона, введите номер" : undefined}>
             <input
-              type="tel"
-              inputMode="tel"
-              value={phone}
-              readOnly={codeSent}
+              name="login"
+              value={login}
               onChange={(e) => {
-                setPhone(formatUaPhone(e.target.value));
-                setPhoneError(null);
+                setLogin(e.target.value);
+                setLoginError(null);
               }}
-              aria-invalid={phoneError ? true : undefined}
-              aria-describedby={phoneError ? "phone-error" : undefined}
-              className={`input ${codeSent ? "opacity-70" : ""}`}
-              placeholder="+380 (67) 123 45 67"
-              autoComplete="tel"
+              aria-invalid={loginError ? true : undefined}
+              aria-describedby={loginError ? "login-error" : undefined}
+              className="input"
+              placeholder={mode === "login" ? "ivan_petrenko" : "Латиница, цифры, _ . -"}
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
               required
+              maxLength={mode === "login" ? 150 : 32}
             />
-            {phoneError && (
-              <span id="phone-error" role="alert" className="field-error block">
-                {phoneError}
+            {loginError && (
+              <span id="login-error" role="alert" className="field-error block">
+                {loginError}
               </span>
-            )}
-            {codeSent && (
-              <button
-                type="button"
-                onClick={() => {
-                  setCodeSent(false);
-                  setCode("");
-                }}
-                className="mt-2 text-sm font-medium text-accent underline-offset-4 hover:underline"
-              >
-                Изменить номер
-              </button>
             )}
           </Field>
 
-          {codeSent && (
-            <Field label="Код из SMS" required>
+          {mode === "register" && (
+            <Field label="Телефон для связи" required hint="По нему курьер свяжется с вами, для входа он не нужен">
               <input
-                name="code"
-                value={code}
-                onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                type="tel"
+                inputMode="tel"
+                value={phone}
+                onChange={(e) => {
+                  setPhone(formatUaPhone(e.target.value));
+                  setPhoneError(null);
+                }}
+                aria-invalid={phoneError ? true : undefined}
+                aria-describedby={phoneError ? "phone-error" : undefined}
                 className="input"
-                placeholder="123456"
-                inputMode="numeric"
-                autoComplete="one-time-code"
+                placeholder="+380 (67) 123 45 67"
+                autoComplete="tel"
                 required
-                minLength={6}
               />
-              <button
-                type="button"
-                disabled={resendIn > 0 || loading}
-                onClick={requestCode}
-                className="mt-2 text-sm font-medium text-accent underline-offset-4 hover:underline disabled:cursor-not-allowed disabled:text-muted disabled:no-underline"
-              >
-                {resendIn > 0 ? `Отправить код еще раз через ${resendIn} с` : "Отправить код еще раз"}
-              </button>
+              {phoneError && (
+                <span id="phone-error" role="alert" className="field-error block">
+                  {phoneError}
+                </span>
+              )}
             </Field>
           )}
 
-          {(mode !== "recover" || codeSent) && (
-            <Field label={mode === "recover" ? "Новый пароль" : "Пароль"} required>
-              <div className="relative">
-                <input
-                  name="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  type={showPassword ? "text" : "password"}
-                  className="input pr-12"
-                  placeholder="••••••••"
-                  autoComplete={mode === "login" ? "current-password" : "new-password"}
-                  required
-                  minLength={8}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((v) => !v)}
-                  aria-label={showPassword ? "Скрыть пароль" : "Показать пароль"}
-                  className="icon-btn absolute right-1 top-1/2 h-10 w-10 -translate-y-1/2"
-                >
-                  <Icon name={showPassword ? "eyeOff" : "eye"} size={18} />
-                </button>
-              </div>
-            </Field>
-          )}
+          <Field label="Пароль" required>
+            <div className="relative">
+              <input
+                name="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                type={showPassword ? "text" : "password"}
+                className="input pr-12"
+                placeholder="••••••••"
+                autoComplete={mode === "login" ? "current-password" : "new-password"}
+                required
+                minLength={8}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                aria-label={showPassword ? "Скрыть пароль" : "Показать пароль"}
+                className="icon-btn absolute right-1 top-1/2 h-10 w-10 -translate-y-1/2"
+              >
+                <Icon name={showPassword ? "eyeOff" : "eye"} size={18} />
+              </button>
+            </div>
+          </Field>
 
           {error && (
             <p role="alert" className="rounded-xl bg-danger/10 px-4 py-3 text-sm text-danger">
@@ -310,15 +257,13 @@ export function AuthModal() {
 
           <button type="submit" disabled={loading} className="btn btn-primary mt-2 h-12 w-full text-base">
             {loading && <Spinner />}
-            {action}
+            {mode === "login" ? "Войти" : "Создать аккаунт"}
           </button>
         </form>
 
         {mode === "login" && (
-          <p className="mt-4 text-center text-sm">
-            <button onClick={() => switchTo("recover")} className="text-muted underline-offset-4 hover:text-text hover:underline">
-              Забыли пароль?
-            </button>
+          <p className="mt-4 text-center text-sm text-muted">
+            Забыли пароль? Самостоятельно его не восстановить, обратитесь в ресторан.
           </p>
         )}
 

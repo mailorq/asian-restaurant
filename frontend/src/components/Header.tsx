@@ -6,7 +6,6 @@ import { UserMenu } from "./UserMenu";
 import { useUI, type View } from "../stores/ui";
 import { useCartQuery } from "../api/cart";
 import { useAuth } from "../stores/auth";
-import { formatUaPhone } from "../lib/phone";
 
 const NAV: { label: string; view: View }[] = [
   { label: "Главная", view: { name: "home" } },
@@ -148,7 +147,7 @@ export function Header() {
                 }}
                 className="flex h-12 items-center gap-2.5 rounded-xl px-3 text-left text-base font-medium text-danger hover:bg-danger/10"
               >
-                <Icon name="logout" size={18} /> Выйти ({user.name || formatUaPhone(user.phone ?? "")})
+                <Icon name="logout" size={18} /> Выйти ({user.name || user.login})
               </button>
             ) : (
               ready && (

@@ -48,9 +48,6 @@ IDENTITY_PATHS = frozenset(
         "/api/auth/jwks",
         "/api/auth/login",
         "/api/auth/register",
-        "/api/auth/register/code",
-        "/api/auth/password/code",
-        "/api/auth/password/reset",
     }
 )
 

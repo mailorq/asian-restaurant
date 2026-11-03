@@ -50,7 +50,7 @@ def _with_token(client):
 
 def test_a_cross_site_text_plain_login_is_refused(user):
     client = _anonymous()
-    body = json.dumps({"phone": user.phone, "password": "Pass!2345", "p": "="})
+    body = json.dumps({"login": user.username, "password": "Pass!2345", "p": "="})
 
     response = client.post("/api/auth/login", data=body, content_type="text/plain")
 
@@ -63,7 +63,7 @@ def test_a_login_without_a_token_is_refused(user):
 
     response = client.post(
         "/api/auth/login",
-        data=json.dumps({"phone": user.phone, "password": "Pass!2345"}),
+        data=json.dumps({"login": user.username, "password": "Pass!2345"}),
         content_type="application/json",
     )
 
@@ -72,14 +72,14 @@ def test_a_login_without_a_token_is_refused(user):
 
 
 def test_a_registration_without_a_token_is_refused():
-    payload = {"phone": "+79990002222", "password": "Pass!2345word", "name": "Гость"}
+    payload = {"login": "guest", "phone": "+79990002222", "password": "Pass!2345word", "name": "Гость"}
 
     response = _anonymous().post(
         "/api/auth/register", data=json.dumps(payload), content_type="application/json"
     )
 
     assert response.status_code == 403
-    assert not get_user_model().objects.filter(phone="+79990002222").exists()
+    assert not get_user_model().objects.filter(username="guest").exists()
 
 
 def test_an_anonymous_cart_write_without_a_token_is_refused(make_product):
@@ -99,7 +99,7 @@ def test_an_anonymous_cart_write_without_a_token_is_refused(make_product):
 def test_a_write_with_a_token_but_not_a_json_body_is_unsupported(user):
     client = _anonymous()
     headers = _with_token(client)
-    body = json.dumps({"phone": user.phone, "password": "Pass!2345"})
+    body = json.dumps({"login": user.username, "password": "Pass!2345"})
 
     response = client.post("/api/auth/login", data=body, content_type="text/plain", headers=headers)
 
@@ -120,7 +120,7 @@ def test_the_site_own_json_writes_with_a_token_pass(user, make_product):
     )
     logged_in = client.post(
         "/api/auth/login",
-        data=json.dumps({"phone": user.phone, "password": "Pass!2345"}),
+        data=json.dumps({"login": user.username, "password": "Pass!2345"}),
         content_type="application/json",
         headers=headers,
     )

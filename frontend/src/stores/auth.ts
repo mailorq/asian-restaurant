@@ -15,6 +15,7 @@ import { useToast } from "./toast";
 
 export interface CurrentUser {
   id: number;
+  login: string;
   phone: string | null;
   name: string;
   is_employee: boolean;

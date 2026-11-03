@@ -21,9 +21,6 @@ const IDENTITY = new Set([
   "/auth/jwks",
   "/auth/login",
   "/auth/register",
-  "/auth/register/code",
-  "/auth/password/code",
-  "/auth/password/reset",
 ]);
 
 export function isAccountChanged(e: unknown): boolean {
