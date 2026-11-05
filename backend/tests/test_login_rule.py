@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
@@ -119,9 +121,64 @@ def test_createsuperuser_gives_a_login_under_the_rule():
     assert get_user_model().objects.get(username="root").is_superuser
 
 
+# the same cases as frontend/tests/login.test.mjs: what the form lets through, the server takes
+ACCEPTED = [
+    ("abc", "abc"),
+    ("Noodle.Fan", "noodle.fan"),
+    ("a_b-c.d", "a_b-c.d"),
+    ("a" + "b" * 31, "a" + "b" * 31),
+    ("\u212aat", "kat"),
+]
+REFUSED = [
+    "ab",
+    "a" + "b" * 32,
+    "1abc",
+    "_abc",
+    "\u017fam",
+    "\u0131van",
+    "\u0430bc",
+    "ab c",
+    "+380671111111",
+    "",
+]
+
+
+def _register(client, login):
+    return client.post(
+        "/api/auth/register",
+        data=json.dumps(
+            {"login": login, "phone": "+380672222222", "password": "Pass!2345word", "name": "Новый"}
+        ),
+        content_type="application/json",
+    )
+
+
+@pytest.mark.parametrize(("login", "stored"), ACCEPTED)
+def test_the_server_takes_the_logins_the_form_takes(client, login, stored):
+    response = _register(client, login)
+
+    assert response.status_code == 200, response.content
+    assert response.json()["login"] == stored
+
+
+@pytest.mark.parametrize("login", REFUSED)
+def test_the_server_refuses_the_logins_the_form_refuses(client, login):
+    response = _register(client, login)
+
+    assert response.status_code in (400, 422)
+    assert not get_user_model().objects.exists()
+
+
 @pytest.mark.parametrize(
     ("username", "stored"),
-    [("alice", True), (PHONE_ERA, True), ("0671111111", False), ("al ice", False)],
+    [
+        ("alice", True),
+        (PHONE_ERA, True),
+        ("0671111111", False),
+        ("al ice", False),
+        ("\u017fam", False),
+        ("+3\u0668\u0660\u0666\u0667\u0661\u0661\u0661\u0661\u0661\u0661", False),
+    ],
 )
 def test_a_stored_login_is_a_login_or_a_number_of_the_phone_era(username, stored):
     user = get_user_model()(username=username, password="x")

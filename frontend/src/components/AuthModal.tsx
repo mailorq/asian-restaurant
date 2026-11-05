@@ -5,6 +5,7 @@ import { useUI } from "../stores/ui";
 import { useToast } from "../stores/toast";
 import { useAuth, type CurrentUser } from "../stores/auth";
 import { api, ApiError } from "../api/client";
+import { isValidLogin } from "../lib/login";
 import { formatUaPhone, isValidUaPhone } from "../lib/phone";
 
 function Field({
@@ -37,9 +38,6 @@ function Spinner() {
 type Mode = "login" | "register";
 
 const TABS = ["login", "register"] as const;
-
-// the server's rule for a new login; it lowercases what was typed first
-const LOGIN = /^[a-z][a-z0-9_.-]{2,31}$/;
 
 export function AuthModal() {
   const mode = useUI((s) => s.authTab);
@@ -90,7 +88,7 @@ export function AuthModal() {
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (mode === "register") {
-      const loginOk = LOGIN.test(login.trim().toLowerCase());
+      const loginOk = isValidLogin(login);
       const phoneOk = isValidUaPhone(phone);
       setLoginError(loginOk ? null : "От 3 до 32 латинских букв, цифр и знаков _ . -, начинается с буквы");
       setPhoneError(phoneOk ? null : "Введите номер в формате +380 (XX) XXX XX XX");

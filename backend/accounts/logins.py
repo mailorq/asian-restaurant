@@ -2,10 +2,11 @@ import re
 
 from django.core.exceptions import ValidationError
 
-# a login starts with a letter, so it never reads as a phone number
-LOGIN = re.compile(r"[a-z][a-z0-9_.-]{2,31}", re.IGNORECASE)
+# a login starts with a letter, so it never reads as a phone number. ascii only: with ignorecase alone, [a-z]
+# also takes the dotless i and the long s, which fold to latin letters
+LOGIN = re.compile(r"[a-z][a-z0-9_.-]{2,31}", re.IGNORECASE | re.ASCII)
 # the login of an account registered by number before logins existed: the number exactly as a typed one normalizes
-PHONE_ERA = re.compile(r"\+[1-9]\d{6,14}")
+PHONE_ERA = re.compile(r"\+[1-9]\d{6,14}", re.ASCII)
 RULE = "Логин: от 3 до 32 латинских букв, цифр и знаков _ . -, начинается с буквы"
 TAKEN = "Этот логин уже занят, выберите другой"
 

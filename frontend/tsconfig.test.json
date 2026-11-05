@@ -9,6 +9,7 @@
   },
   "include": [
     "src/lib/commandIntents.ts",
+    "src/lib/login.ts",
     "src/lib/session.ts",
     "src/lib/sessionCache.ts",
     "src/api/cart.ts",
