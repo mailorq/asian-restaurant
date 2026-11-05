@@ -1,9 +1,10 @@
 from django import forms
 from django.contrib import admin, messages
 from django.contrib.auth.admin import GroupAdmin, UserAdmin
-from django.contrib.auth.forms import UserChangeForm
+from django.contrib.auth.forms import AdminUserCreationForm, UserChangeForm
 from django.contrib.auth.models import Group
 
+from accounts import logins
 from accounts import service as accounts_service
 from accounts.models import User
 from accounts.phone import to_e164
@@ -15,6 +16,11 @@ _PROFILE_FIELDS = {"first_name", "phone"}
 _ACCESS_FIELDS = {"is_active", "is_superuser"}
 _ROW_FIELDS = frozenset(f.name for f in User._meta.concrete_fields)
 _STAFF_GROUPS = [*StaffRole.values, LEGACY_GROUP]
+
+
+class CustomerCreationForm(AdminUserCreationForm):
+    def clean_username(self):
+        return logins.new_login(self.cleaned_data["username"])
 
 
 class CustomerChangeForm(RenderedValuesForm, UserChangeForm):
@@ -46,6 +52,13 @@ class CustomerChangeForm(RenderedValuesForm, UserChangeForm):
                 )
         return cleaned
 
+    def clean_username(self):
+        username = self.cleaned_data["username"]
+        # a login of the phone era stays until it is changed, and a change is a new login like any other
+        if username == self.instance.username:
+            return username
+        return logins.new_login(username, excluding=self.instance.pk)
+
     def clean_phone(self):
         raw = self.cleaned_data.get("phone")
         if not raw:
@@ -59,6 +72,7 @@ class CustomerChangeForm(RenderedValuesForm, UserChangeForm):
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
     form = CustomerChangeForm
+    add_form = CustomerCreationForm
     fieldsets = UserAdmin.fieldsets + (("Contact", {"fields": ("phone", "customer_version", "authz_version")}),)
     list_display = ("username", "phone", "email", "is_staff", "is_active")
     search_fields = ("username", "phone", "email")

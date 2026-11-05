@@ -23,12 +23,13 @@ INSTALLED_APPS = [
     # must be first so it wraps the db and cache backends
     "django_prometheus",
     "config.apps.SuperuserAdminConfig",
+    # ahead of auth, so its createsuperuser is the one manage.py runs
+    "accounts",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    "accounts",
     "menu",
     "orders",
     "ops",

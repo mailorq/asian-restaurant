@@ -9,7 +9,7 @@ from ninja import Router
 from ninja.errors import HttpError
 from ninja.security import django_auth
 
-from accounts import jwt_service
+from accounts import jwt_service, logins
 from accounts import service as accounts_service
 from accounts.models import User
 from accounts.phone import to_e164
@@ -18,31 +18,26 @@ from common.ratelimit import rate_limit
 
 router = Router(tags=["auth"])
 
-# a login starts with a letter, so it never reads as a phone number: an account registered by number before
-# logins existed keeps that number as its login, and nobody can take one that looks like it
-LOGIN = re.compile(r"[a-z][a-z0-9_.-]{2,31}")
 # what a customer of the phone era types as their login, in any of the formats a number is written in
 PHONE_TYPED = re.compile(r"\+?[\d\s()-]+")
-LOGIN_TAKEN = "Этот логин уже занят, выберите другой"
 
 
 def _login_of(raw: str) -> str:
     typed = raw.strip()
     if PHONE_TYPED.fullmatch(typed):
         return to_e164(typed) or typed
-    # registration keeps logins unique whatever their case, so a differently typed case still finds the one
-    found = list(User.objects.filter(username__iexact=typed).values_list("username", flat=True)[:2])
-    return found[0] if len(found) == 1 else typed
+    # logins are unique whatever their case, so a differently typed case still finds the one
+    found = User.objects.filter(username__iexact=typed).values_list("username", flat=True).first()
+    return found or typed
 
 
 @router.post("/register", response=UserOut, auth=None)
 @rate_limit("register", limit=5, window=600)
 def register(request, data: RegisterIn):
-    username = data.login.strip().lower()
-    if not LOGIN.fullmatch(username):
-        raise HttpError(
-            400, "Логин: от 3 до 32 латинских букв, цифр и знаков _ . -, начинается с буквы"
-        )
+    try:
+        username = logins.new_login(data.login)
+    except ValidationError as exc:
+        raise HttpError(400, " ".join(exc.messages)) from exc
     name = data.name.strip()
     if not name:
         raise HttpError(400, "Укажите имя")
@@ -54,8 +49,6 @@ def register(request, data: RegisterIn):
         validate_password(data.password, User(username=username, phone=phone, first_name=name))
     except ValidationError as exc:
         raise HttpError(400, " ".join(exc.messages)) from exc
-    if User.objects.filter(username__iexact=username).exists():
-        raise HttpError(400, LOGIN_TAKEN)
     try:
         with transaction.atomic():
             user = User.objects.create_user(
@@ -63,7 +56,8 @@ def register(request, data: RegisterIn):
             )
             accounts_service.emit_customer_created(user)
     except IntegrityError as exc:
-        raise HttpError(400, LOGIN_TAKEN) from exc
+        # the same login registered in between: the case-insensitive unique index refused this one
+        raise HttpError(400, logins.TAKEN) from exc
     login(request, user, backend="django.contrib.auth.backends.ModelBackend")
     return user
 

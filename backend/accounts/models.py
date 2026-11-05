@@ -1,6 +1,9 @@
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.db.models.functions import Lower
+
+from accounts.logins import TAKEN, validate_login_shape
 
 # staff who may access the /employee area
 EMPLOYEE_GROUP = "restaurant_employee"
@@ -14,6 +17,13 @@ def has_operations_role(user) -> bool:
 
 
 class User(AbstractUser):
+    username = models.CharField(
+        "username",
+        max_length=150,
+        unique=True,
+        validators=[validate_login_shape],
+        error_messages={"unique": TAKEN},
+    )
     # the contact for an order, normalized to E.164, e.g. +380671234567; unconfirmed, so it identifies nobody
     # and two accounts may give the same one
     phone = models.CharField(max_length=16, blank=True)
@@ -23,6 +33,16 @@ class User(AbstractUser):
     authz_version = models.PositiveIntegerField(default=1)
     # this employee changes order status only through operations commands; the direct endpoint and the admin actions refuse them
     transitions_via_commands = models.BooleanField(default=False)
+
+    class Meta(AbstractUser.Meta):
+        # sign in finds a login whatever its case, so two that differ only in case would be one login
+        constraints = [
+            models.UniqueConstraint(
+                Lower("username"),
+                name="accounts_user_login_ci_unique",
+                violation_error_message=TAKEN,
+            )
+        ]
 
     def __str__(self) -> str:
         return self.username
