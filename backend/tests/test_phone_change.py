@@ -368,3 +368,21 @@ def test_going_back_without_a_shared_number_restores_the_unique_one():
             old.objects.create(username="another", phone=OLD, password="x")
     finally:
         _executor().migrate(leaves)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_going_back_passes_accounts_the_release_before_left_without_a_number():
+    target = ("accounts", "0011_phone_challenge")
+    leaves = _executor().loader.graph.leaf_nodes()
+    # written while this release migrated: the column still takes null, and a unique one holds any number of them
+    previous = _users_at(target)
+    left = [
+        previous.objects.create(username=name, password="x").pk for name in ("left_one", "left_two")
+    ]
+    get_user_model().objects.create_user(username="bare", password="x")
+    try:
+        _executor().migrate([target])
+
+        assert _users_at(target).objects.filter(pk__in=left, phone__isnull=True).count() == 2
+    finally:
+        _executor().migrate(leaves)

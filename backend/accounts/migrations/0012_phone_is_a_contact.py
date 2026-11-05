@@ -9,9 +9,12 @@ def blank_for_null(apps, schema_editor):
 def null_for_blank(apps, schema_editor):
     user_model = apps.get_model("accounts", "User")
     # going back makes the number unique again, and since this migration two accounts may give the same one:
-    # which of them keeps it is not for a migration to decide, so it stops and names them instead
+    # which of them keeps it is not for a migration to decide, so it stops and names them instead. null is no number:
+    # the release before writes it for an account without one and a unique column holds many, while exclude alone
+    # would keep the nulls, as a negated comparison on a nullable column does
     shared = (
-        user_model.objects.exclude(phone="")
+        user_model.objects.filter(phone__isnull=False)
+        .exclude(phone="")
         .values("phone")
         .annotate(n=Count("pk"))
         .filter(n__gt=1)
