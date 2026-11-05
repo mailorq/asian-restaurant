@@ -2,6 +2,7 @@ import json
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.db import IntegrityError, transaction
 
 from accounts import service as accounts_service
 from orders.models import OrderOutbox
@@ -191,6 +192,29 @@ def test_the_admin_form_reports_an_invalid_number(admin_client, customer):
 
 
 @pytest.mark.django_db(transaction=True)
+def test_the_release_before_writes_accounts_and_codes_while_this_one_migrates():
+    from django.db import connection
+    from django.db.migrations.executor import MigrationExecutor
+    from django.utils import timezone
+
+    apps = (
+        MigrationExecutor(connection)
+        .loader.project_state([("accounts", "0011_phone_challenge")])
+        .apps
+    )
+    users, codes = apps.get_model("accounts", "User"), apps.get_model("accounts", "PhoneChallenge")
+
+    # it serves until the runtime is recreated: an account without a number gets null, and the codes stay
+    bare = users.objects.create(username=NEW, password="x")
+    code = codes.objects.create(
+        phone=NEW, purpose="register", code_hash="h", expires_at=timezone.now()
+    )
+
+    assert users.objects.get(pk=bare.pk).phone is None
+    assert codes.objects.get(pk=code.pk).phone == NEW
+
+
+@pytest.mark.django_db(transaction=True)
 def test_the_migration_keeps_every_account_and_frees_the_number():
     from django.db import connection
     from django.db.migrations.executor import MigrationExecutor
@@ -292,3 +316,55 @@ def test_the_migration_stops_at_a_split_it_cannot_resolve():
             "accounts", "User"
         ).objects.all().delete()
         executor.migrate(leaves)
+
+
+def _executor():
+    from django.db import connection
+    from django.db.migrations.executor import MigrationExecutor
+
+    return MigrationExecutor(connection)
+
+
+def _users_at(node):
+    return _executor().loader.project_state([node]).apps.get_model("accounts", "User")
+
+
+@pytest.mark.django_db(transaction=True)
+def test_going_back_stops_while_two_accounts_share_a_number():
+    leaves = _executor().loader.graph.leaf_nodes()
+    users = get_user_model()
+    first = users.objects.create_user(username="first", phone=OLD, password="x")
+    second = users.objects.create_user(username="second", phone=OLD, password="x")
+    try:
+        with pytest.raises(
+            RuntimeError, match=rf"share a phone number.*\[{first.pk}, {second.pk}\]"
+        ):
+            _executor().migrate([("accounts", "0011_phone_challenge")])
+
+        # nothing of the refused step is applied: both accounts keep the number
+        assert sorted(users.objects.filter(phone=OLD).values_list("pk", flat=True)) == [
+            first.pk,
+            second.pk,
+        ]
+    finally:
+        _executor().migrate(leaves)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_going_back_without_a_shared_number_restores_the_unique_one():
+    target = ("accounts", "0011_phone_challenge")
+    leaves = _executor().loader.graph.leaf_nodes()
+    users = get_user_model()
+    holder = users.objects.create_user(username="holder", phone=OLD, password="x")
+    users.objects.create_user(username="bare_one", password="x")
+    users.objects.create_user(username="bare_two", password="x")
+    try:
+        _executor().migrate([target])
+
+        old = _users_at(target)
+        assert old.objects.get(pk=holder.pk).phone == OLD
+        assert old.objects.filter(phone__isnull=True).count() == 2
+        with pytest.raises(IntegrityError), transaction.atomic():
+            old.objects.create(username="another", phone=OLD, password="x")
+    finally:
+        _executor().migrate(leaves)
