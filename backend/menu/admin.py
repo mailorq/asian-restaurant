@@ -1,6 +1,7 @@
 from django import forms
-from django.contrib import admin, messages
+from django.contrib import admin
 from django.core.files.uploadedfile import UploadedFile
+from django.db import router, transaction
 from django.utils import timezone
 from django.utils.text import Truncator
 
@@ -146,6 +147,10 @@ class ProductChangelistForm(ProductWriteForm, forms.ModelForm):
         model = Product
         fields = ("price", "is_active", "is_featured")
 
+    def current(self) -> Product:
+        # ProductAdmin.changelist_view holds one transaction over the check and the save, as the change view does
+        return Product.objects.select_for_update().get(pk=self.instance.pk)
+
     def refuse(self) -> None:
         # the list has no room to settle a conflict; the card of the product does
         for conflict in self.conflicts:
@@ -192,22 +197,31 @@ class ProductAdmin(admin.ModelAdmin):
         # obj may be older than the row, so only what the admin edited leaves it
         names = form.changed_data if getattr(form, "accepted", None) is None else form.accepted
         changes = {name: getattr(obj, name) for name in names if name in _ROW_FIELDS}
-        try:
-            inventory.update_product(
-                obj.pk,
-                changes,
-                reason="admin edit",
-                staff=request.user,
-                seen=getattr(form, "seen", None),
-            )
-        except inventory.ProductConflict as exc:
-            # the list checks before its save transaction begins, so a change made in between ends here
-            messages.error(
-                request,
-                f"{obj.name}: {', '.join(form.fields[c.field].label for c in exc.conflicts)} изменили, "
-                f"пока список был открыт. Правка не сохранена, решите ее в карточке товара.",
-            )
+        inventory.update_product(
+            obj.pk,
+            changes,
+            reason="admin edit",
+            staff=request.user,
+            seen=getattr(form, "seen", None),
+        )
         obj.refresh_from_db()
+
+    def changelist_view(self, request, extra_context=None):
+        # django validates the list before it opens the transaction it saves in, so a row could change between its
+        # check and its write and still be reported as saved. one transaction over both, with the rows locked in id
+        # order as checkout and stock corrections take them, leaves no such gap
+        with transaction.atomic(using=router.db_for_write(Product)):
+            if request.method == "POST" and "_save" in request.POST:
+                ids = sorted(
+                    int(v) for k, v in request.POST.items() if k.endswith("-id") and v.isdigit()
+                )
+                list(
+                    Product.objects.select_for_update()
+                    .filter(pk__in=ids)
+                    .order_by("id")
+                    .values_list("pk")
+                )
+            return super().changelist_view(request, extra_context)
 
     def get_changelist_form(self, request, **kwargs):
         kwargs.setdefault("form", ProductChangelistForm)

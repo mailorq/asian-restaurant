@@ -183,6 +183,50 @@ def test_a_stock_row_the_release_before_wrote_is_signed_by_its_reason(
     assert [row["staff"] for row in history] == [None if author else employee_user.username]
 
 
+@pytest.mark.django_db(transaction=True)
+def test_a_card_saved_while_the_list_writes_waits_for_it_and_then_sees_its_edit(
+    admin_client, make_product, colleague, monkeypatch
+):
+    import threading
+
+    from menu.admin import ProductAdmin
+    from tests.concurrency import Writer, queue_behind
+
+    product = make_product(price="100.00")
+    form = rendered_form(admin_client, LIST)
+    form.update({"form-0-price": "130.00", "_save": "Save"})
+    holding, release, outcome = threading.Event(), threading.Event(), {}
+    real = ProductAdmin.save_model
+
+    # the list has checked its row and is about to write it
+    def list_holds(self, request, obj, form, change):
+        holding.set()
+        assert release.wait(timeout=20)
+        real(self, request, obj, form, change)
+
+    monkeypatch.setattr(ProductAdmin, "save_model", list_holds)
+
+    def card():
+        try:
+            inventory.update_product(
+                product.pk,
+                {"price": "140.00"},
+                reason="admin edit",
+                staff=colleague,
+                seen={"price": "100.00"},
+            )
+        except inventory.ProductConflict as exc:
+            outcome["card"] = exc.conflicts[0].current
+
+    lister = Writer("list", lambda: outcome.setdefault("list", admin_client.post(LIST, form)))
+    met = queue_behind(lister, Writer("card", card), holding, release)
+
+    assert met == "blocked"
+    assert outcome["list"].status_code == 302
+    product.refresh_from_db()
+    assert (str(product.price), str(outcome["card"])) == ("130.00", "130.00")
+
+
 def test_a_change_nobody_recorded_has_no_author(admin_client, make_product):
     product = make_product()
     form = rendered_form(admin_client, _card(product))
