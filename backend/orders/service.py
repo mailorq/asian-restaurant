@@ -9,7 +9,7 @@ from ninja.errors import HttpError
 from accounts.roles import Capability, has_capability
 from cart import service as cart_service
 from menu import inventory
-from menu.models import Product
+from menu.models import Product, StockAdjustment
 from orders import geocode as geo
 from orders.models import (
     DeliveryAddress,
@@ -154,7 +154,10 @@ def _create_order(
             )
         )
         inventory.record_stock_change(
-            product, product.stock_quantity - quantity, reason=f"order #{order.id}"
+            product,
+            product.stock_quantity - quantity,
+            reason=f"order #{order.id}",
+            source=StockAdjustment.Source.SALE,
         )
 
     OrderItem.objects.bulk_create(items)
@@ -333,7 +336,8 @@ def checkout(user, raw_address: str, payment_method: str, idempotency_key: str, 
     return _after_commit(user, order)
 
 
-def _restore_stock(order: Order, staff=None) -> None:
+def _restore_stock(order: Order) -> None:
+    # the stock comes back because the order went, not by anyone's hand: who cancelled it is in its status history
     items = list(order.items.all())
     if not items:
         return
@@ -351,7 +355,7 @@ def _restore_stock(order: Order, staff=None) -> None:
             product,
             product.stock_quantity + item.quantity,
             reason=f"cancelled order #{order.id}",
-            staff=staff,
+            source=StockAdjustment.Source.CANCELLATION,
         )
 
 
@@ -368,7 +372,7 @@ def transition(order: Order, new_status: str, changed_by=None, note: str = "",
         raise CheckoutError("invalid_transition", f"Недопустимый переход {locked.status} → {new_status}")
 
     if new_status == Order.Status.CANCELLED:
-        _restore_stock(locked, staff=changed_by)
+        _restore_stock(locked)
 
     previous = locked.status
     locked.status = new_status

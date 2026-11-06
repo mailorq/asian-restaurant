@@ -1,6 +1,10 @@
+import datetime as dt
+from dataclasses import dataclass
+
+from django.core.exceptions import ValidationError
 from django.db import transaction
 
-from menu.models import Product, StockAdjustment
+from menu.models import Product, ProductChange, StockAdjustment
 from orders.models import OrderOutbox
 
 STOCK_EVENT = "inventory.stock_changed"
@@ -15,11 +19,17 @@ def _emit(product: Product, *, snapshot: bool = False, run_id: str = "") -> None
         routing_key=STOCK_EVENT,
         snapshot=snapshot,
         snapshot_run_id=run_id,
-        payload={"product_code": product.code, "name": product.name, "stock_quantity": product.stock_quantity},
+        payload={
+            "product_code": product.code,
+            "name": product.name,
+            "stock_quantity": product.stock_quantity,
+        },
     )
 
 
-def record_stock_change(product: Product, new_quantity: int, *, reason: str, staff=None) -> None:
+def record_stock_change(
+    product: Product, new_quantity: int, *, reason: str, source: str, staff=None
+) -> None:
     # single writer of stock: caller must already hold the Product row lock so the
     # stock write, version bump and outbox event commit atomically in one transaction
     old_quantity = product.stock_quantity
@@ -27,7 +37,12 @@ def record_stock_change(product: Product, new_quantity: int, *, reason: str, sta
     product.version += 1
     product.save(update_fields=["stock_quantity", "version"])
     StockAdjustment.objects.create(
-        product=product, staff=staff, old_quantity=old_quantity, new_quantity=new_quantity, reason=reason
+        product=product,
+        staff=staff,
+        source=source,
+        old_quantity=old_quantity,
+        new_quantity=new_quantity,
+        reason=reason,
     )
     _emit(product)
 
@@ -36,6 +51,11 @@ def record_stock_change(product: Product, new_quantity: int, *, reason: str, sta
 PROJECTED_FIELDS = frozenset({"name", "stock_quantity"})
 # operations knows a product by its code, and the version belongs to this writer
 FIXED_FIELDS = frozenset({"code", "version"})
+_NOT_SIGNED = {
+    StockAdjustment.Source.SALE: "продажа",
+    StockAdjustment.Source.CANCELLATION: "отмена заказа",
+    StockAdjustment.Source.SYSTEM: "система",
+}
 
 
 class StaleProduct(Exception):
@@ -44,11 +64,94 @@ class StaleProduct(Exception):
         super().__init__(f"product {product.pk} is at version {product.version}")
 
 
+@dataclass(frozen=True)
+class FieldConflict:
+    field: str
+    # what the row holds now, who left it there and when; author is None when nobody knows
+    current: object
+    author: str | None
+    at: dt.datetime | None
+
+
+class ProductConflict(Exception):
+    """fields the caller writes changed after it was shown them"""
+
+    def __init__(self, product: Product, conflicts: list[FieldConflict]) -> None:
+        self.product = product
+        self.conflicts = conflicts
+        super().__init__(f"product {product.pk}: {', '.join(c.field for c in conflicts)} changed")
+
+
+def stored(field: str, value):
+    """a value as the row compares it, whether it comes from the row, a form or a page that showed it"""
+    if field == "image":
+        return getattr(value, "name", value) or ""
+    return Product._meta.get_field(field).to_python(value)
+
+
+def shown(field: str, value) -> str:
+    """the text a page carries for a value it showed; stored() reads it back"""
+    value = stored(field, value)
+    return "" if value is None else str(value)
+
+
+def _same(field: str, current, seen) -> bool:
+    try:
+        return stored(field, current) == stored(field, seen)
+    except ValidationError:
+        return False
+
+
+def author_of(product: Product, field: str) -> tuple[str | None, dt.datetime | None]:
+    """who left the field as it is: a person only for an edit a person made"""
+    if field == "stock_quantity":
+        row = (
+            product.stock_adjustments.select_related("staff").order_by("-created_at", "-id").first()
+        )
+        if row is None:
+            return None, None
+        if row.source in _NOT_SIGNED:
+            return _NOT_SIGNED[row.source], row.created_at
+        return (row.staff.username if row.staff_id else None), row.created_at
+    row = (
+        ProductChange.objects.filter(product=product, field=field)
+        .select_related("staff")
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    if row is None:
+        return None, None
+    return (
+        row.staff.username if row.staff_id else _NOT_SIGNED[StockAdjustment.Source.SYSTEM]
+    ), row.created_at
+
+
+def conflicts(product: Product, seen: dict) -> list[FieldConflict]:
+    """the fields whose value in the row is not the one the caller saw; the caller holds the row lock"""
+    found = []
+    for field, value in seen.items():
+        current = getattr(product, field)
+        if not _same(field, current, value):
+            author, at = author_of(product, field)
+            found.append(FieldConflict(field, current, author, at))
+    return found
+
+
 @transaction.atomic
 def update_product(
-    product_id: int, changes: dict, *, reason: str, staff=None, expected_version: int | None = None
+    product_id: int,
+    changes: dict,
+    *,
+    reason: str,
+    staff=None,
+    expected_version: int | None = None,
+    seen: dict | None = None,
 ) -> Product | None:
-    # the one writer of an existing product row: it locks the row before reading it, writes only the fields it was given, and refuses a caller whose view of name or stock is older than the row
+    """
+    the one writer of an existing product row: it locks the row before reading it and writes only the fields it was
+    given. it refuses a caller whose view of name or stock is older than the row (expected_version), and one that
+    writes a field which no longer holds the value it was shown (seen, by field)
+    """
     fixed = FIXED_FIELDS.intersection(changes)
     if fixed:
         raise ValueError(f"{', '.join(sorted(fixed))} of an existing product cannot change")
@@ -57,7 +160,10 @@ def update_product(
         return None
     if expected_version is not None and product.version != expected_version:
         raise StaleProduct(product)
-    old_quantity = product.stock_quantity
+    clashes = conflicts(product, {f: seen[f] for f in changes if seen and f in seen})
+    if clashes:
+        raise ProductConflict(product, clashes)
+    before = {f: getattr(product, f) for f in changes}
     written = [
         f
         for f, value in changes.items()
@@ -70,12 +176,28 @@ def update_product(
     projected = PROJECTED_FIELDS.intersection(written)
     if projected:
         product.version += 1
-        written.append("version")
-    product.save(update_fields=written)
+    product.save(update_fields=[*written, "version"] if projected else written)
     if "stock_quantity" in projected:
         StockAdjustment.objects.create(
-            product=product, staff=staff, old_quantity=old_quantity, new_quantity=product.stock_quantity, reason=reason
+            product=product,
+            staff=staff,
+            source=StockAdjustment.Source.STAFF if staff else StockAdjustment.Source.SYSTEM,
+            old_quantity=before["stock_quantity"],
+            new_quantity=product.stock_quantity,
+            reason=reason,
         )
+    ProductChange.objects.bulk_create(
+        ProductChange(
+            product=product,
+            field=field,
+            old_value=shown(field, before[field]),
+            new_value=shown(field, getattr(product, field)),
+            staff=staff,
+            reason=reason,
+        )
+        for field in written
+        if field != "stock_quantity" and not _same(field, before[field], getattr(product, field))
+    )
     if projected:
         _emit(product)
     return product

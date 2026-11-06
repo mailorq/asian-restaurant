@@ -53,10 +53,19 @@ class Product(models.Model):
 
 
 class StockAdjustment(models.Model):
+    class Source(models.TextChoices):
+        STAFF = "staff", "Сотрудник"
+        SALE = "sale", "Продажа"
+        CANCELLATION = "cancellation", "Отмена заказа"
+        SYSTEM = "system", "Система"
+
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="stock_adjustments")
     staff = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
     )
+    # what moved the stock; only a staff change is signed by a person. empty is a row the release before wrote
+    # while this one migrated, which the database fills in
+    source = models.CharField(max_length=16, choices=Source.choices, blank=True, db_default="")
     old_quantity = models.PositiveIntegerField()
     new_quantity = models.PositiveIntegerField()
     reason = models.CharField(max_length=255)
@@ -67,3 +76,25 @@ class StockAdjustment(models.Model):
 
     def __str__(self) -> str:
         return f"{self.product.code}: {self.old_quantity} → {self.new_quantity}"
+
+
+class ProductChange(models.Model):
+    """a card field other than the stock, as an edit left it; the stock keeps its own log in StockAdjustment"""
+
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="changes")
+    field = models.CharField(max_length=32)
+    old_value = models.TextField(blank=True)
+    new_value = models.TextField(blank=True)
+    # null when no person made the edit
+    staff = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    reason = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["product", "field", "-created_at"])]
+
+    def __str__(self) -> str:
+        return f"{self.product.code}.{self.field}"

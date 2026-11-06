@@ -1,0 +1,21 @@
+{% extends "admin/change_form.html" %}
+
+{% block form_top %}
+{% with rows=adminform.form.conflict_rows %}
+{% if rows %}
+<fieldset class="module aligned">
+  <h2>Изменено, пока форма была открыта</h2>
+  {% for row in rows %}
+  <div class="form-row">
+    <p><strong>{{ row.label }}</strong>: сейчас «{{ row.current }}» ({{ row.author }}{% if row.at %}, {{ row.at }}{% endif %}), у вас «{{ row.mine }}».</p>
+    <input type="hidden" name="shown-{{ row.field }}" value="{{ row.shown }}">
+    <p>
+      <label><input type="radio" name="resolve-{{ row.field }}" value="keep"> Оставить текущее, отменить мою правку</label>
+      <label><input type="radio" name="resolve-{{ row.field }}" value="mine"> Записать мое значение поверх текущего</label>
+    </p>
+  </div>
+  {% endfor %}
+</fieldset>
+{% endif %}
+{% endwith %}
+{% endblock %}

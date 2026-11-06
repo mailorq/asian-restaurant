@@ -1,20 +1,81 @@
 from django import forms
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.core.files.uploadedfile import UploadedFile
+from django.utils import timezone
+from django.utils.text import Truncator
 
 from common.forms import RenderedValuesForm
 from menu import inventory
-from menu.models import Ingredient, Product, StockAdjustment
+from menu.models import Ingredient, Product, ProductChange, StockAdjustment
 
 _ROW_FIELDS = frozenset(f.name for f in Product._meta.concrete_fields)
 # the admin location in frontend/nginx/default.conf takes a larger body, so an oversized photo gets this form's message and not a bare 413
 PRODUCT_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+KEEP, MINE = "keep", "mine"
 
 
-class ProductAdminForm(RenderedValuesForm, forms.ModelForm):
-    # the version the form was rendered at: name and stock are written only against it, so a sale or edit made while it was open is reported, not overwritten
-    expected_version = forms.IntegerField(widget=forms.HiddenInput, required=False)
+def _display(field: str, value) -> str:
+    if field == "image":
+        return getattr(value, "name", value) or "нет фото"
+    if isinstance(value, bool):
+        return "да" if value else "нет"
+    if field == "category":
+        return Product.Category(value).label if value else "пусто"
+    text = "" if value is None else str(value)
+    return Truncator(text).chars(60) if text else "пусто"
 
+
+def _when(conflict) -> str:
+    return timezone.localtime(conflict.at).strftime("%d.%m.%Y %H:%M") if conflict.at else ""
+
+
+class ProductWriteForm(RenderedValuesForm):
+    """
+    a product form that writes only the fields its admin edited, each while the row still holds the value the form
+    showed: a field someone else changed meanwhile comes back with what it holds now and who left it there
+    """
+
+    conflicts: tuple | list = ()
+    # what save_model writes and the values the admin saw of those fields; None until the form is clean
+    accepted: list | None = None
+    seen: dict | None = None
+
+    def edited(self) -> list[str]:
+        names = [name for name in self.changed_data if name in _ROW_FIELDS]
+        # a file input posts nothing back, so the photo is edited only when one is sent or cleared
+        image = self.cleaned_data.get("image")
+        if "image" in names and not (isinstance(image, UploadedFile) or image is False):
+            names.remove("image")
+        return names
+
+    def rendered(self, name: str):
+        """the value this form was shown for the field, as the page posted it back"""
+        widget = self.fields[name].hidden_widget()
+        return widget.value_from_datadict(self.data, self.files, self.add_initial_prefix(name))
+
+    def resolved(self, names: list[str], seen: dict) -> tuple[list[str], dict]:
+        return names, seen
+
+    def current(self) -> Product:
+        return Product.objects.get(pk=self.instance.pk)
+
+    def refuse(self) -> None:
+        raise NotImplementedError
+
+    def clean(self):
+        cleaned = super().clean()
+        if not self.instance.pk or self._errors:
+            return cleaned
+        names = self.edited()
+        names, seen = self.resolved(names, {name: self.rendered(name) for name in names})
+        self.conflicts = inventory.conflicts(self.current(), seen)
+        if self.conflicts:
+            self.refuse()
+        self.accepted, self.seen = names, seen
+        return cleaned
+
+
+class ProductAdminForm(ProductWriteForm, forms.ModelForm):
     class Meta:
         model = Product
         fields = (
@@ -31,44 +92,87 @@ class ProductAdminForm(RenderedValuesForm, forms.ModelForm):
             "is_featured",
         )
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        if self.instance.pk and not self.is_bound:
-            self.fields["expected_version"].initial = self.instance.version
-
     def clean_image(self):
         image = self.cleaned_data.get("image")
         if isinstance(image, UploadedFile) and image.size > PRODUCT_IMAGE_MAX_BYTES:
             raise forms.ValidationError("Фото больше 5 МБ")
         return image
 
-    def clean(self):
-        cleaned = super().clean()
-        if self.instance.pk and inventory.PROJECTED_FIELDS.intersection(self.changed_data):
-            # the admin view runs in one transaction, so this lock is held until save_model has written
-            current = (
-                Product.objects.select_for_update()
-                .filter(pk=self.instance.pk)
-                .values_list("version", flat=True)
-            )
-            if cleaned.get("expected_version") != current.first():
-                raise forms.ValidationError(
-                    "Товар изменился, пока форма была открыта: остаток или название уже другие. "
-                    "Обновите страницу и внесите правку заново."
-                )
-        return cleaned
+    def resolved(self, names, seen):
+        # a conflict the admin saw is settled field by field: keep what the row holds, or write over the value
+        # shown then, which the writer checks again under the row lock
+        names = list(names)
+        for name in list(names):
+            choice = self.data.get(f"resolve-{name}")
+            if choice == KEEP:
+                names.remove(name)
+                seen.pop(name)
+            elif choice == MINE:
+                seen[name] = self.data.get(f"shown-{name}")
+        return names, seen
+
+    def current(self) -> Product:
+        # the admin view runs in one transaction, so this lock holds until save_model has written
+        return Product.objects.select_for_update().get(pk=self.instance.pk)
+
+    def refuse(self) -> None:
+        raise forms.ValidationError(
+            "Пока форма была открыта, эти поля изменили. Выберите для каждого, оставить текущее значение "
+            "или записать свое, и сохраните еще раз."
+        )
+
+    @property
+    def conflict_rows(self) -> list[dict]:
+        return [
+            {
+                "field": c.field,
+                "label": self.fields[c.field].label,
+                "current": _display(c.field, c.current),
+                "author": c.author or "автор неизвестен",
+                "at": _when(c),
+                "mine": (
+                    "новое фото, загрузите его еще раз"
+                    if c.field == "image"
+                    else _display(c.field, self.cleaned_data.get(c.field))
+                ),
+                "shown": inventory.shown(c.field, c.current),
+            }
+            for c in self.conflicts
+        ]
 
 
-class ProductChangelistForm(RenderedValuesForm, forms.ModelForm):
+class ProductChangelistForm(ProductWriteForm, forms.ModelForm):
     class Meta:
         model = Product
         fields = ("price", "is_active", "is_featured")
+
+    def refuse(self) -> None:
+        # the list has no room to settle a conflict; the card of the product does
+        for conflict in self.conflicts:
+            self.add_error(
+                conflict.field,
+                f"Изменено, пока список был открыт: {self.describe(conflict)}. Решите в карточке товара.",
+            )
+
+    @staticmethod
+    def describe(conflict) -> str:
+        when = _when(conflict)
+        source = conflict.author or "автор неизвестен"
+        return f"сейчас «{_display(conflict.field, conflict.current)}» ({source}{f', {when}' if when else ''})"
 
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
     form = ProductAdminForm
-    list_display = ("code", "name", "category", "price", "stock_quantity", "is_active", "is_featured")
+    list_display = (
+        "code",
+        "name",
+        "category",
+        "price",
+        "stock_quantity",
+        "is_active",
+        "is_featured",
+    )
     list_filter = ("category", "is_active", "is_featured")
     list_editable = ("price", "is_active", "is_featured")
     search_fields = ("code", "name", "description")
@@ -86,15 +190,23 @@ class ProductAdmin(admin.ModelAdmin):
             inventory.emit_state(obj)
             return
         # obj may be older than the row, so only what the admin edited leaves it
-        changes = {name: getattr(obj, name) for name in form.changed_data if name in _ROW_FIELDS}
-        expected = (
-            form.cleaned_data.get("expected_version")
-            if inventory.PROJECTED_FIELDS & set(changes)
-            else None
-        )
-        inventory.update_product(
-            obj.pk, changes, expected_version=expected, reason="admin edit", staff=request.user
-        )
+        names = form.changed_data if getattr(form, "accepted", None) is None else form.accepted
+        changes = {name: getattr(obj, name) for name in names if name in _ROW_FIELDS}
+        try:
+            inventory.update_product(
+                obj.pk,
+                changes,
+                reason="admin edit",
+                staff=request.user,
+                seen=getattr(form, "seen", None),
+            )
+        except inventory.ProductConflict as exc:
+            # the list checks before its save transaction begins, so a change made in between ends here
+            messages.error(
+                request,
+                f"{obj.name}: {', '.join(form.fields[c.field].label for c in exc.conflicts)} изменили, "
+                f"пока список был открыт. Правка не сохранена, решите ее в карточке товара.",
+            )
         obj.refresh_from_db()
 
     def get_changelist_form(self, request, **kwargs):
@@ -119,12 +231,7 @@ class IngredientAdmin(admin.ModelAdmin):
     search_fields = ("name",)
 
 
-@admin.register(StockAdjustment)
-class StockAdjustmentAdmin(admin.ModelAdmin):
-    list_display = ("product", "old_quantity", "new_quantity", "reason", "staff", "created_at")
-    list_filter = ("created_at",)
-    search_fields = ("product__code", "product__name", "reason")
-
+class _AuditAdmin(admin.ModelAdmin):
     # audit log only: entries are written by the inventory service, never by hand
     def has_add_permission(self, request):
         return False
@@ -134,3 +241,25 @@ class StockAdjustmentAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+@admin.register(StockAdjustment)
+class StockAdjustmentAdmin(_AuditAdmin):
+    list_display = (
+        "product",
+        "old_quantity",
+        "new_quantity",
+        "source",
+        "reason",
+        "staff",
+        "created_at",
+    )
+    list_filter = ("source", "created_at")
+    search_fields = ("product__code", "product__name", "reason")
+
+
+@admin.register(ProductChange)
+class ProductChangeAdmin(_AuditAdmin):
+    list_display = ("product", "field", "old_value", "new_value", "staff", "reason", "created_at")
+    list_filter = ("field", "created_at")
+    search_fields = ("product__code", "product__name")

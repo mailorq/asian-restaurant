@@ -62,9 +62,9 @@ def test_record_stock_change_emits_and_audits(make_product):
     product = make_product(stock=5)
     start = product.version
 
-    inventory.record_stock_change(product, 3, reason="order #1")
+    inventory.record_stock_change(product, 3, reason="order #1", source=StockAdjustment.Source.SALE)
 
     product.refresh_from_db()
     assert product.stock_quantity == 3 and product.version == start + 1
-    assert StockAdjustment.objects.filter(product=product, reason="order #1").exists()
+    assert StockAdjustment.objects.filter(product=product, reason="order #1", source="sale").exists()
     assert _events("inventory.stock_changed").latest("created_at").payload["stock_quantity"] == 3

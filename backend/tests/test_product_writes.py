@@ -66,7 +66,7 @@ def test_a_stock_edit_from_a_form_opened_before_a_sale_is_refused(admin_client, 
     response = admin_client.post(f"/admin/menu/product/{product.pk}/change/", form)
 
     assert response.status_code == 200
-    assert "Товар изменился" in response.content.decode()
+    assert "сейчас «7» (продажа" in response.content.decode()
     product.refresh_from_db()
     assert product.stock_quantity == 7
     assert not StockAdjustment.objects.filter(product=product, reason="admin edit").exists()
