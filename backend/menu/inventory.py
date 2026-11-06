@@ -110,8 +110,8 @@ def author_of(product: Product, field: str) -> tuple[str | None, dt.datetime | N
         )
         if row is None:
             return None, None
-        if row.source in _NOT_SIGNED:
-            return _NOT_SIGNED[row.source], row.created_at
+        if row.moved_by() in _NOT_SIGNED:
+            return _NOT_SIGNED[row.moved_by()], row.created_at
         return (row.staff.username if row.staff_id else None), row.created_at
     row = (
         ProductChange.objects.filter(product=product, field=field)

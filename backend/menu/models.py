@@ -77,6 +77,16 @@ class StockAdjustment(models.Model):
     def __str__(self) -> str:
         return f"{self.product.code}: {self.old_quantity} → {self.new_quantity}"
 
+    def moved_by(self) -> str:
+        """the source of the row; one the release before wrote while this one migrated says it in its reason"""
+        if self.source:
+            return self.source
+        if self.reason.startswith("cancelled order #"):
+            return self.Source.CANCELLATION
+        if self.reason.startswith("order #"):
+            return self.Source.SALE
+        return self.Source.STAFF if self.staff_id else self.Source.SYSTEM
+
 
 class ProductChange(models.Model):
     """a card field other than the stock, as an edit left it; the stock keeps its own log in StockAdjustment"""

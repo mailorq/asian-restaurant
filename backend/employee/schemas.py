@@ -71,7 +71,7 @@ class StockAdjustmentOut(Schema):
     @staticmethod
     def resolve_staff(obj) -> str | None:
         # a sale, a cancelled order and the system move stock by no one's hand, so none of them is signed
-        if obj.source not in ("", StockAdjustment.Source.STAFF):
+        if obj.moved_by() != StockAdjustment.Source.STAFF:
             return None
         return obj.staff.username if obj.staff_id else None
 

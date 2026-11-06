@@ -147,6 +147,42 @@ def test_stock_returned_by_a_cancelled_order_is_signed_by_no_one(
     assert [row["staff"] for row in history] == [None, None]
 
 
+@pytest.mark.parametrize(
+    ("reason", "by_staff", "author"),
+    [
+        ("cancelled order #7", True, "отмена заказа"),
+        ("order #7", False, "продажа"),
+        ("поставка", True, None),
+        ("initial stock", False, "система"),
+    ],
+)
+def test_a_stock_row_the_release_before_wrote_is_signed_by_its_reason(
+    client, make_product, employee_user, reason, by_staff, author
+):
+    from django.db import connection
+    from django.db.migrations.executor import MigrationExecutor
+
+    product = make_product(stock=10)
+    previous = (
+        MigrationExecutor(connection).loader.project_state([("menu", "0003_product_version")]).apps
+    )
+    # written while this release migrated: the source it does not know is left to the database default
+    previous.get_model("menu", "StockAdjustment").objects.create(
+        product_id=product.pk,
+        staff_id=employee_user.pk if by_staff else None,
+        old_quantity=7,
+        new_quantity=10,
+        reason=reason,
+    )
+
+    assert StockAdjustment.objects.get(product=product).source == ""
+    signed = author or employee_user.username
+    assert inventory.author_of(product, "stock_quantity")[0] == signed
+    client.force_login(employee_user)
+    history = client.get(f"/api/employee/inventory/{product.pk}/adjustments").json()
+    assert [row["staff"] for row in history] == [None if author else employee_user.username]
+
+
 def test_a_change_nobody_recorded_has_no_author(admin_client, make_product):
     product = make_product()
     form = rendered_form(admin_client, _card(product))
