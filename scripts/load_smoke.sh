@@ -119,11 +119,9 @@ stock_round() {  # stock_round <name> <buyers> <stock> <units each>
 import asyncio, json, os, threading, time
 from django.contrib.auth import get_user_model
 from django.db import connection
-from django.db.models import F, Sum
 from cart import service as cart_service
-from menu.models import Product, StockAdjustment
+from menu.models import Product
 from orders import service as order_service
-from orders.models import OrderItem
 
 name, buyers, stock, each = os.environ["ROUND"], int(os.environ["BUYERS"]), int(os.environ["STOCK"]), int(os.environ["EACH"])
 product = Product.objects.create(code=f"load_{name}", category="dish", name=f"Нагрузка {name}", price="10.00",
@@ -156,19 +154,56 @@ for thread in threads:
 for thread in threads:
     thread.join(120)
 wall = time.perf_counter() - started
-product.refresh_from_db()
-sold = OrderItem.objects.filter(product=product).aggregate(units=Sum("quantity"))["units"] or 0
-left = StockAdjustment.objects.filter(product=product, source="sale").aggregate(units=Sum(F("old_quantity") - F("new_quantity")))["units"] or 0
 counts = {}
 for answer in answers:
     counts[answer] = counts.get(answer, 0) + 1
-print("RESULT " + json.dumps({
-    "answers": counts, "orders": OrderItem.objects.filter(product=product).values("order").distinct().count(),
-    "units_sold": sold, "units_left_by_sales": left, "stock": product.stock_quantity, "version": product.version,
-    "seconds": round(wall, 2),
-}, ensure_ascii=False))
+print("RESULT " + json.dumps({"answers": counts, "seconds": round(wall, 2)}, ensure_ascii=False))
 connection.close()
 PY
+}
+# writes of one product's stock queue on its row lock, so the order of their history rows is the order they happened in
+ledger() {  # ledger <product code> <initial stock>: each order of the product against the stock history, row by row
+  shell -e CODE="$1" -e INITIAL="$2" <<'PY' | result
+import json, os
+from menu.models import Product, StockAdjustment
+from orders.models import OrderItem
+
+product = Product.objects.get(code=os.environ["CODE"])
+ordered = {item["order"]: item["quantity"] for item in OrderItem.objects.filter(product=product).values("order", "quantity")}
+taken, other, breaks, level = {}, 0, 0, int(os.environ["INITIAL"])
+for row in StockAdjustment.objects.filter(product=product).order_by("id"):
+    # every row starts where the one before it ended, or a write was made from a stale stock
+    breaks += row.old_quantity != level
+    level = row.new_quantity
+    if row.source == "sale" and row.reason.startswith("order #"):
+        taken.setdefault(int(row.reason.removeprefix("order #")), []).append(row.old_quantity - row.new_quantity)
+    else:
+        other += 1
+print("RESULT " + json.dumps({
+    "orders": len(ordered), "units": sum(ordered.values()),
+    "orders_without_history": sorted(set(ordered) - set(taken)),
+    "history_without_order": sorted(set(taken) - set(ordered)),
+    "orders_not_taken_once": sorted(o for o in set(ordered) & set(taken) if taken[o] != [ordered[o]]),
+    "other_rows": other, "trail_breaks": breaks, "trail_end": level, "stock": product.stock_quantity,
+    "version": product.version,
+}))
+PY
+}
+check_ledger() {  # check_ledger <what> <product code> <initial stock> <orders> <units each>
+  local out left=$(($3 - $4 * $5))
+  out="$(ledger "$2" "$3")"
+  [ -n "$out" ] || fail "$1: the ledger printed nothing"
+  echo "$1 ledger: $out"
+  [ "$(field "$out" orders)" = "$4" ] || fail "$1: $(field "$out" orders) orders in the database, expected $4"
+  [ "$(field "$out" units)" = "$(($4 * $5))" ] || fail "$1: $(field "$out" units) units in orders"
+  for empty in orders_without_history history_without_order orders_not_taken_once; do
+    [ "$(field "$out" "$empty")" = "[]" ] || fail "$1: $empty $(field "$out" "$empty")"
+  done
+  [ "$(field "$out" other_rows)" = 0 ] || fail "$1: $(field "$out" other_rows) stock rows that are no sale of an order"
+  [ "$(field "$out" trail_breaks)" = 0 ] || fail "$1: $(field "$out" trail_breaks) stock rows start off where the one before ended"
+  [ "$(field "$out" trail_end)" = "$left" ] || fail "$1: the stock history ends at $(field "$out" trail_end), expected $left"
+  [ "$(field "$out" stock)" = "$left" ] || fail "$1: $(field "$out" stock) left in stock, expected $left"
+  [ "$(field "$out" version)" = "$((1 + $4))" ] || fail "$1: version $(field "$out" version) after $4 sales"
 }
 check_round() {  # check_round <name> <buyers> <stock> <units each>
   local out expect
@@ -177,18 +212,14 @@ check_round() {  # check_round <name> <buyers> <stock> <units each>
   echo "round $1: $2 buyers of $4 unit(s) each for a stock of $3: $out"
   expect=$(($3 / $4))
   [ "$expect" -le "$2" ] || expect=$2
-  [ "$(field "$out" orders)" = "$expect" ] || fail "round $1: $(field "$out" orders) orders, expected $expect"
   [ "$(field "$out" answers.ordered)" = "$expect" ] || fail "round $1: the service reported $(field "$out" answers.ordered) orders"
   [ "$(python3 -c 'import json, sys; a = json.load(sys.stdin)["answers"]; print(sum(v for k, v in a.items() if k not in ("ordered", "refused cart_changed")))' <<<"$out")" = 0 ] \
     || fail "round $1: answers other than an order or a refusal for the stock"
-  [ "$(field "$out" units_sold)" = "$((expect * $4))" ] || fail "round $1: $(field "$out" units_sold) units in orders"
-  [ "$(field "$out" units_left_by_sales)" = "$((expect * $4))" ] || fail "round $1: sales took $(field "$out" units_left_by_sales) units from the stock"
-  [ "$(field "$out" stock)" = "$(($3 - expect * $4))" ] || fail "round $1: $(field "$out" stock) left in stock"
-  [ "$(field "$out" version)" = "$((1 + expect))" ] || fail "round $1: version $(field "$out" version) after $expect sales"
+  check_ledger "round $1" "load_$1" "$3" "$expect" "$4"
 }
 check_round one 50 20 1
 check_round three 50 20 3
-ok "buyers at once never take more than the stock: every order is in the stock history and the rest is refused"
+ok "buyers at once never take more than the stock: each order took its units in exactly one stock row, the rows form one unbroken trail from the stock to what is left, and the rest is refused"
 
 echo "== http through nginx, each client under its own forwarded address =="
 seed="$(shell -e LOAD_PASSWORD <<'PY' | result
@@ -215,12 +246,11 @@ logins="$(python3 -c 'import json; print(json.dumps([f"load_http_{n}" for n in r
 out="$(probe checkout "{\"product_id\": $(field "$seed" burst), \"logins\": $logins}")" || true
 echo "checkout burst: $out"
 [ -z "$(problems "$out")" ] || fail "checkout burst: $(problems "$out")"
-[ "$(field "$out" ordered)" = 25 ] || fail "checkout burst: $(field "$out" ordered) orders for a stock of 25"
-left="$(shell <<<'from menu.models import Product; print("RESULT " + str(Product.objects.get(code="load_http").stock_quantity))' | result)"
-[ "$left" = 0 ] || fail "checkout burst: $left left in stock after 25 orders"
+[ "$(field "$out" ordered)" = 25 ] || fail "checkout burst: $(field "$out" ordered) answers 200 for a stock of 25"
+check_ledger "checkout burst" load_http 25 25 1
 
 out="$(probe limits "{\"product_id\": $(field "$seed" limits), \"login\": \"load_limits\"}")" || true
 echo "limits: $out"
 [ -z "$(problems "$out")" ] || fail "limits: $(problems "$out")"
-ok "the catalog and checkout answer without 5xx, the burst sells exactly the stock and every limit refuses past its count"
+ok "the catalog and checkout answer without 5xx, the burst sells exactly the stock order by order and every limit refuses past its count"
 echo "LOAD OK"
