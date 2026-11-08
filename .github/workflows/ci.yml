@@ -281,6 +281,14 @@ jobs:
       - uses: actions/checkout@v7
       - run: bash scripts/delivery_faults_smoke.sh
 
+  load:
+    # buyers at once against one stock through the order service, then http through nginx under the per client limits, on the production render
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash scripts/load_smoke.sh
+
   release-upgrade:
     # two releases in a row by the release block of DEPLOY.md: the second migrates with and runs its own commit
     timeout-minutes: 40
