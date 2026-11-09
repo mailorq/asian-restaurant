@@ -165,11 +165,14 @@ PY
 ledger() {  # ledger <product code> <initial stock>: each order of the product against the stock history, row by row
   shell -e CODE="$1" -e INITIAL="$2" <<'PY' | result
 import json, os
+from django.db.models import Count, Sum
 from menu.models import Product, StockAdjustment
 from orders.models import OrderItem
 
 product = Product.objects.get(code=os.environ["CODE"])
-ordered = {item["order"]: item["quantity"] for item in OrderItem.objects.filter(product=product).values("order", "quantity")}
+# an order holds what all its lines of the product add up to; checkout writes one line per product
+lines = list(OrderItem.objects.filter(product=product).values("order").annotate(lines=Count("id"), units=Sum("quantity")))
+ordered = {line["order"]: line["units"] for line in lines}
 taken, other, breaks, level = {}, 0, 0, int(os.environ["INITIAL"])
 for row in StockAdjustment.objects.filter(product=product).order_by("id"):
     # every row starts where the one before it ended, or a write was made from a stale stock
@@ -184,6 +187,7 @@ print("RESULT " + json.dumps({
     "orders_without_history": sorted(set(ordered) - set(taken)),
     "history_without_order": sorted(set(taken) - set(ordered)),
     "orders_not_taken_once": sorted(o for o in set(ordered) & set(taken) if taken[o] != [ordered[o]]),
+    "orders_with_more_lines": sorted(line["order"] for line in lines if line["lines"] != 1),
     "other_rows": other, "trail_breaks": breaks, "trail_end": level, "stock": product.stock_quantity,
     "version": product.version,
 }))
@@ -196,7 +200,7 @@ check_ledger() {  # check_ledger <what> <product code> <initial stock> <orders> 
   echo "$1 ledger: $out"
   [ "$(field "$out" orders)" = "$4" ] || fail "$1: $(field "$out" orders) orders in the database, expected $4"
   [ "$(field "$out" units)" = "$(($4 * $5))" ] || fail "$1: $(field "$out" units) units in orders"
-  for empty in orders_without_history history_without_order orders_not_taken_once; do
+  for empty in orders_without_history history_without_order orders_not_taken_once orders_with_more_lines; do
     [ "$(field "$out" "$empty")" = "[]" ] || fail "$1: $empty $(field "$out" "$empty")"
   done
   [ "$(field "$out" other_rows)" = 0 ] || fail "$1: $(field "$out" other_rows) stock rows that are no sale of an order"
